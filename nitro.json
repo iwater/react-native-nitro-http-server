@@ -1,0 +1,31 @@
+{
+  "$schema": "https://nitro.margelo.com/nitro.schema.json",
+  "cxxNamespace": [
+    "http_server"
+  ],
+  "ios": {
+    "iosModuleName": "RNHttpServer"
+  },
+  "android": {
+    "androidNamespace": [
+      "http_server"
+    ],
+    "androidCxxLibName": "RNHttpServer"
+  },
+  "autolinking": {
+    "HttpServer": {
+      "cpp": "HybridHttpServer"
+    }
+  },
+  "cxx": {
+    "extraIncludeDirs": [
+      "./cpp"
+    ],
+    "extraLibs": [
+      "rn_http_server"
+    ],
+    "extraLibDirs": [
+      "./lib"
+    ]
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "name": "react-native-nitro-http-server",
+  "version": "0.1.6",
+  "description": "React Native HTTP Server with Nitro Modules",
+  "main": "./lib/index.js",
+  "module": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "import": "./lib/index.js",
+      "require": "./lib/index.js",
+      "default": "./lib/index.js"
+    },
+    "./http": {
+      "types": "./lib/http.d.ts",
+      "import": "./lib/http.js",
+      "require": "./lib/http.js",
+      "default": "./lib/http.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepare": "yarn build",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "react-native",
+    "http-server",
+    "nitro-modules",
+    "http",
+    "server"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "events": "^3.3.0",
+    "react-native-nitro-modules": "^0.31.10"
+  },
+  "devDependencies": {
+    "@types/events": "^3",
+    "@types/node": "^24.10.1",
+    "nitrogen": "^0.31.10",
+    "typescript": "^5.9.3"
+  },
+  "packageManager": "yarn@4.11.0",
+  "files": [
+    "lib/",
+    "src/",
+    "cpp/",
+    "ios/",
+    "android/",
+    "nitrogen/",
+    "polyfills/",
+    "*.podspec"
+  ]
+}
