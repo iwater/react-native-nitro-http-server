@@ -2,6 +2,11 @@
   "name": "react-native-nitro-http-server",
   "version": "0.2.3",
   "description": "React Native HTTP Server with Nitro Modules",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/iwater/react-native-nitro-http-server.git"
+  },
+  "homepage": "https://github.com/iwater/react-native-nitro-http-server",
   "main": "./lib/index.js",
   "module": "./lib/index.js",
   "types": "./lib/index.d.ts",
