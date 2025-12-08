@@ -1,0 +1,7 @@
+node_modules
+nitrogen
+package.tgz
+lib
+.DS_Store
+.git
+.yarn
