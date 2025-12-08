@@ -1,6 +1,7 @@
 // cpp/HybridHttpServer.hpp
 #pragma once
 #include "../nitrogen/generated/shared/c++/HybridHttpServerSpec.hpp"
+#include <NitroModules/ArrayBuffer.hpp>
 
 namespace margelo::nitro::http_server {
 
@@ -53,6 +54,12 @@ public:
   std::shared_ptr<Promise<bool>>
   endResponse(const std::string &requestId, double statusCode,
               const std::string &headersJson) override;
+
+  // 二进制响应（在 JS 线程上安全复制数据）
+  std::shared_ptr<Promise<bool>>
+  sendBinaryResponse(const std::string &requestId, double statusCode,
+                     const std::string &headersJson,
+                     const std::shared_ptr<ArrayBuffer> &body) override;
 
 private:
   // 发送 HTTP 响应到 Rust 服务器的辅助方法

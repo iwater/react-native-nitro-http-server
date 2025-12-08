@@ -1,7 +1,15 @@
 // src/index.ts
 import { NitroModules } from 'react-native-nitro-modules'
-import type { HttpServer, HttpRequest, HttpResponse, RequestHandler } from './HttpServer.nitro'
+import type { HttpServer, HttpRequest, HttpResponse as NitroHttpResponse } from './HttpServer.nitro'
 import { createServer } from 'http'
+
+// Redefine HttpResponse for User (User sees unified body)
+export interface HttpResponse extends Omit<NitroHttpResponse, 'body' | 'binaryBody'> {
+    body?: string | ArrayBuffer
+}
+
+// Redefine RequestHandler to use local HttpResponse
+export type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResponse
 
 // 创建 HybridObject 实例
 const HttpServerModule = NitroModules.createHybridObject<HttpServer>("HttpServer")
@@ -18,8 +26,44 @@ export class ReactNativeHttpServer {
             throw new Error('Server is already running')
         }
 
-        this.currentHandler = handler
-        const success = await HttpServerModule.start(port, handler, host)
+        // Wrap the handler to intercept binaryBody
+        const wrappedHandler: (request: HttpRequest) => Promise<NitroHttpResponse> = async (request) => {
+            const response = await handler(request)
+
+            // If response body is binary (ArrayBuffer or View), send it safely via the direct API
+            if (response.body && typeof response.body === 'object' &&
+                (response.body instanceof ArrayBuffer || ArrayBuffer.isView(response.body))) {
+
+                const binaryBody = response.body as ArrayBuffer | ArrayBufferView;
+                const buffer = binaryBody instanceof ArrayBuffer
+                    ? binaryBody
+                    : (binaryBody.byteLength === binaryBody.buffer.byteLength && binaryBody.byteOffset === 0)
+                        ? binaryBody.buffer
+                        : binaryBody.buffer.slice(binaryBody.byteOffset, binaryBody.byteOffset + binaryBody.byteLength);
+
+                const headers = response.headers || {}
+                const headersJson = JSON.stringify(headers)
+                // Use the safe native method that copies data on JS thread
+                await HttpServerModule.sendBinaryResponse(
+                    request.requestId,
+                    response.statusCode,
+                    headersJson,
+                    buffer as ArrayBuffer
+                )
+                // Return a dummy response to satisfy the native promise
+                return {
+                    statusCode: response.statusCode,
+                    headers: response.headers,
+                    body: '' // Body handled via sendBinaryResponse
+                }
+            }
+
+            // String body or empty
+            return response as NitroHttpResponse
+        }
+
+        this.currentHandler = wrappedHandler
+        const success = await HttpServerModule.start(port, wrappedHandler, host)
         this.isRunning = success
         return success
     }
@@ -99,8 +143,44 @@ export class ReactNativeHttpServer {
             throw new Error('Server is already running')
         }
 
-        this.currentHandler = handler
-        const success = await HttpServerModule.startAppServer(port, rootDir, handler, host)
+        // Wrap the handler to intercept binaryBody
+        const wrappedHandler: (request: HttpRequest) => Promise<NitroHttpResponse> = async (request) => {
+            const response = await handler(request)
+
+            // If response body is binary (ArrayBuffer or View), send it safely via the direct API
+            if (response.body && typeof response.body === 'object' &&
+                (response.body instanceof ArrayBuffer || ArrayBuffer.isView(response.body))) {
+
+                const binaryBody = response.body as ArrayBuffer | ArrayBufferView;
+                const buffer = binaryBody instanceof ArrayBuffer
+                    ? binaryBody
+                    : (binaryBody.byteLength === binaryBody.buffer.byteLength && binaryBody.byteOffset === 0)
+                        ? binaryBody.buffer
+                        : binaryBody.buffer.slice(binaryBody.byteOffset, binaryBody.byteOffset + binaryBody.byteLength);
+
+                const headers = response.headers || {}
+                const headersJson = JSON.stringify(headers)
+                // Use the safe native method that copies data on JS thread
+                await HttpServerModule.sendBinaryResponse(
+                    request.requestId,
+                    response.statusCode,
+                    headersJson,
+                    buffer as ArrayBuffer
+                )
+                // Return a dummy response to satisfy the native promise
+                return {
+                    statusCode: response.statusCode,
+                    headers: response.headers,
+                    body: '' // Body handled via sendBinaryResponse
+                }
+            }
+
+            // String body or empty
+            return response as NitroHttpResponse
+        }
+
+        this.currentHandler = wrappedHandler
+        const success = await HttpServerModule.startAppServer(port, rootDir, wrappedHandler, host)
         this.isAppServerRunning = success
         return success
     }
@@ -134,10 +214,36 @@ export class ReactNativeHttpServer {
         await server.startAppServer(port, staticDir, handler, host)
         return server
     }
+
+    /**
+     * 发送二进制响应（线程安全）
+     * 此方法在 JS 线程上同步复制 ArrayBuffer 数据，避免跨线程访问问题
+     * 适用于 async handler 中需要返回二进制数据的场景
+     * 
+     * @param requestId 请求 ID
+     * @param statusCode HTTP 状态码
+     * @param headers 响应头
+     * @param body 二进制响应体
+     * @returns 是否发送成功
+     * 
+     * @example
+     * server.start(8080, async (request) => {
+     *   const imageBuffer = new ArrayBuffer(100);
+     *   await server.sendBinaryResponse(
+     *     request.requestId,
+     *     200,
+     *     { 'Content-Type': 'image/png' },
+     *     imageBuffer
+     *   );
+     *   return { statusCode: 200 }; // 返回值会被忽略
+     * });
+     */
+
 }
 
 // 导出类型和实例
-export type { HttpRequest, HttpResponse, RequestHandler }
+// 导出类型和实例
+export type { HttpRequest }
 export { HttpServerModule }
 // export default ReactNativeHttpServer
 

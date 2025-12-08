@@ -62,6 +62,27 @@ console.log('Server running at http://localhost:8080');
 // await server.stop();
 ```
 
+### Binary Response Example
+
+```typescript
+import ReactNativeHttpServer from 'react-native-nitro-http-server';
+
+const server = new ReactNativeHttpServer();
+
+await server.start(8080, async (request) => {
+  // Return a binary image
+  const imageBuffer = new ArrayBuffer(1024); // Your binary data
+  
+  return {
+    statusCode: 200,
+    headers: {
+      'Content-Type': 'image/png',
+    },
+    body: imageBuffer, // direct ArrayBuffer support
+  };
+});
+```
+
 ### Static File Server
 
 ```typescript
@@ -304,7 +325,7 @@ interface HttpRequest {
 interface HttpResponse {
   statusCode: number;     // HTTP Status Code (200, 404, 500, etc.)
   headers?: Record<string, string>;  // Response headers (optional)
-  body?: string;          // Response body (optional)
+  body?: string | ArrayBuffer;       // Response body (string or ArrayBuffer)
 }
 ```
 
@@ -385,10 +406,12 @@ Note: Due to React Native environment limitations, streaming APIs may currently 
 
 **A**: Built on Rust's Actix-web framework, performance is excellent. Here are the benchmark results (Test Environment: MacMini M4, 1 Thread, 2 Connections):
 
-| Mode | QPS (Req/Sec) | Latency (Avg) | Transfer Rate |
-| :--- | :--- | :--- | :--- |
-| **Basic HTTP Server**<br>(ReactNativeHttpServer.start) | **~33,267** | **~83.45us** | **~4.86MB** |
-| **Node.js Compatible Layer**<br>(Koa via createServer) | **~4,421** | **~2.76ms** | **~682.22KB** |
+| Mode | QPS (Req/Sec) | Latency (Avg) |
+| :--- | :--- | :--- |
+| **Basic HTTP** | **~41.85k** | **~58.14us** |
+| **Node.js Compatible API** | **~21.60k** | **~274.81us** |
+| **Koa Framework** | **~13.32k** | **~313.10us** |
+| **Binary Mode** | **~35.46k** | **~124.29us** |
 
 *Note: The Node.js compatible layer has lower performance due to additional JavaScript bridging and object conversion, but it is still sufficient for most application scenarios.*
 

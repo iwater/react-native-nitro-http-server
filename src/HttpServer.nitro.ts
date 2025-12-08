@@ -15,6 +15,7 @@ export interface HttpResponse {
     statusCode: number
     headers?: Record<string, string>
     body?: string
+
 }
 
 // 服务器统计信息接口
@@ -106,6 +107,17 @@ export interface HttpServer extends HybridObject<{
      * @returns 是否成功
      */
     endResponse(requestId: string, statusCode: number, headersJson: string): Promise<boolean>
+
+    /**
+     * 写入二进制响应体并发送响应（同步复制数据）
+     * 此方法在 JS 线程上安全地复制 ArrayBuffer 数据，避免跨线程访问问题
+     * @param requestId 请求 ID
+     * @param statusCode HTTP 状态码
+     * @param headersJson 响应头 JSON 字符串
+     * @param body 二进制响应体
+     * @returns 是否成功
+     */
+    sendBinaryResponse(requestId: string, statusCode: number, headersJson: string, body: ArrayBuffer): Promise<boolean>
 
     /**
      * 启动App HTTP服务器（混合静态文件和回调）

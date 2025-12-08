@@ -62,6 +62,27 @@ console.log('服务器运行在 http://localhost:8080');
 // await server.stop();
 ```
 
+### 二进制响应示例
+
+```typescript
+import ReactNativeHttpServer from 'react-native-nitro-http-server';
+
+const server = new ReactNativeHttpServer();
+
+await server.start(8080, async (request) => {
+  // 返回二进制图片
+  const imageBuffer = new ArrayBuffer(1024); // 您的二进制数据
+  
+  return {
+    statusCode: 200,
+    headers: {
+      'Content-Type': 'image/png',
+    },
+    body: imageBuffer, // 直接支持 ArrayBuffer
+  };
+});
+```
+
 ### 静态文件服务器
 
 ```typescript
@@ -314,7 +335,7 @@ interface HttpRequest {
 interface HttpResponse {
   statusCode: number;     // HTTP 状态码 (200, 404, 500, etc.)
   headers?: Record<string, string>;  // 响应头（可选）
-  body?: string;          // 响应体（可选）
+  body?: string | ArrayBuffer;       // 响应体（支持 string 或 ArrayBuffer）
 }
 ```
 
@@ -395,16 +416,18 @@ type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResp
 
 **A**: 基于 Rust 的 Actix-web 框架，性能非常优秀。以下是基准测试结果（测试环境：MacMini M4, 1 Thread, 2 Connections）：
 
-| 模式 | QPS (Req/Sec) | 延迟 (Latency Avg) | 传输速率 (Transfer/Sec) |
-| :--- | :--- | :--- | :--- |
-| **基础 HTTP 服务器**<br>(ReactNativeHttpServer.start) | **~33,267** | **~83.45us** | **~4.86MB** |
-| **Node.js 兼容层**<br>(Koa via createServer) | **~4,421** | **~2.76ms** | **~682.22KB** |
+| 模式 | QPS (Req/Sec) | 延迟 (Latency Avg) |
+| :--- | :--- | :--- |
+| **基础 HTTP** | **~41.85k** | **~58.14us** |
+| **Node.js 兼容 API** | **~21.60k** | **~274.81us** |
+| **Koa 框架** | **~13.32k** | **~313.10us** |
+| **二进制模式** | **~35.46k** | **~124.29us** |
 
 *注：Node.js 兼容层由于涉及更多的 JavaScript 桥接和对象转换，性能会低于原生 Rust 实现，但仍然足以满足大多数应用场景。*
 
 ### Q: 可以同时运行动态服务器和静态服务器吗？
 
-**A**: 可以，但它们必须使用不同的端口：
+
 
 **A**: 可以。你可以分别启动动态服务器和静态服务器（使用不同端口），或者使用 `startAppServer` 在同一个端口上同时提供静态文件和动态 API 服务。
 

@@ -60,25 +60,35 @@ static std::string serializeHeaders(
   return json;
 }
 
-// 辅助函数：发送 HTTP 响应
-static void sendHttpResponseInternal(const std::string &requestId,
-                                     const HttpResponse &response) {
+// 辅助函数：从 HttpResponse 提取数据并发送 HTTP 响应
+// 警告：此函数在回调路径中调用，可能在非 JS 线程上执行
+// 因此 **不能** 访问 ArrayBuffer（binaryBody），否则会导致内存损坏
+static void extractAndSendResponse(const std::string &requestId,
+                                   const HttpResponse &response) {
   int statusCode = static_cast<int>(response.statusCode);
 
   // 序列化 headers
   std::string headersJson = serializeHeaders(response.headers);
 
+  // 仅使用字符串 body
+  std::string bodyStr;
+  if (response.body.has_value()) {
+    bodyStr = response.body.value();
+  }
+
   const char *body = "";
   size_t bodyLen = 0;
-  if (response.body.has_value()) {
-    body = response.body.value().c_str();
-    bodyLen = response.body.value().length();
+
+  if (!bodyStr.empty()) {
+    body = bodyStr.c_str();
+    bodyLen = bodyStr.length();
   }
 
   std::cout << "[HTTP Server] Sending response for request: " << requestId
             << ", status: " << statusCode << ", headers: " << headersJson
             << ", body length: " << bodyLen << std::endl;
 
+  // 直接发送响应（send_response 内部会将数据复制到 Rust）
   send_response(requestId.c_str(), statusCode, headersJson.c_str(), body,
                 static_cast<int>(bodyLen));
 }
@@ -140,14 +150,14 @@ static void c_request_callback(::HttpRequest *cRequest) {
           // 处理返回值（可能是直接的响应或者 Promise）
           if (std::holds_alternative<HttpResponse>(result)) {
             HttpResponse response = std::get<HttpResponse>(result);
-            sendHttpResponseInternal(requestId, response);
+            extractAndSendResponse(requestId, response);
           } else {
             // 如果是 Promise，等待它完成
             auto promise =
                 std::get<std::shared_ptr<Promise<HttpResponse>>>(result);
             promise->addOnResolvedListener(
                 [requestId](const HttpResponse &resp) {
-                  sendHttpResponseInternal(requestId, resp);
+                  extractAndSendResponse(requestId, resp);
                 });
             promise->addOnRejectedListener(
                 [requestId](const std::exception_ptr &error) {
@@ -155,7 +165,7 @@ static void c_request_callback(::HttpRequest *cRequest) {
                   HttpResponse errorResp;
                   errorResp.statusCode = 500;
                   errorResp.body = "Internal Server Error";
-                  sendHttpResponseInternal(requestId, errorResp);
+                  extractAndSendResponse(requestId, errorResp);
                 });
           }
         });
@@ -166,7 +176,7 @@ static void c_request_callback(::HttpRequest *cRequest) {
           HttpResponse errorResp;
           errorResp.statusCode = 500;
           errorResp.body = "Internal Server Error";
-          sendHttpResponseInternal(requestId, errorResp);
+          extractAndSendResponse(requestId, errorResp);
         });
 
   } catch (const std::exception &e) {
@@ -218,17 +228,21 @@ std::shared_ptr<Promise<bool>> HybridHttpServer::start(
 std::shared_ptr<Promise<bool>>
 HybridHttpServer::sendResponse(const std::string &requestId,
                                const HttpResponse &response) {
-  return Promise<bool>::async([requestId, response]() -> bool {
-    int statusCode = static_cast<int>(response.statusCode);
 
-    // 序列化 headers
-    std::string headersJson = serializeHeaders(response.headers);
+  // 复制其他需要的数据
+  std::string bodyStr = response.body.has_value() ? response.body.value() : "";
+  std::string headersJson = serializeHeaders(response.headers);
+  int statusCode = static_cast<int>(response.statusCode);
 
+  return Promise<bool>::async([requestId, statusCode, headersJson,
+                               bodyStr]() -> bool {
     const char *body = "";
     size_t bodyLen = 0;
-    if (response.body.has_value()) {
-      body = response.body.value().c_str();
-      bodyLen = response.body.value().length();
+
+    // 优先使用 binaryBody（二进制数据）
+    if (!bodyStr.empty()) {
+      body = bodyStr.c_str();
+      bodyLen = bodyStr.length();
     }
 
     std::cout << "[HTTP Server] Sending response (sendResponse) for request: "
@@ -334,7 +348,7 @@ std::shared_ptr<Promise<void>> HybridHttpServer::stopAppServer() {
 
 void HybridHttpServer::sendHttpResponse(const std::string &requestId,
                                         const HttpResponse &response) {
-  sendHttpResponseInternal(requestId, response);
+  extractAndSendResponse(requestId, response);
 }
 
 std::shared_ptr<Promise<std::string>>
@@ -372,6 +386,43 @@ HybridHttpServer::endResponse(const std::string &requestId, double statusCode,
   return Promise<bool>::async([requestId, statusCode, headersJson]() -> bool {
     int code = static_cast<int>(statusCode);
     return end_response(requestId.c_str(), code, headersJson.c_str());
+  });
+}
+
+std::shared_ptr<Promise<bool>> HybridHttpServer::sendBinaryResponse(
+    const std::string &requestId, double statusCode,
+    const std::string &headersJson, const std::shared_ptr<ArrayBuffer> &body) {
+  // 关键：在 JS 线程上同步复制 ArrayBuffer 数据
+  // 这样可以确保在进入异步上下文之前数据已被安全复制
+  std::vector<uint8_t> binaryData;
+  if (body && body->data() && body->size() > 0) {
+    const uint8_t *data = body->data();
+    size_t size = body->size();
+    binaryData.assign(data, data + size);
+    std::cout << "[HTTP Server] sendBinaryResponse: copied " << size
+              << " bytes on JS thread" << std::endl;
+  }
+
+  int code = static_cast<int>(statusCode);
+
+  // 使用移动语义将数据传入异步上下文
+  return Promise<bool>::async([requestId, code, headersJson,
+                               binaryData = std::move(binaryData)]() -> bool {
+    const char *bodyPtr = "";
+    size_t bodyLen = 0;
+
+    if (!binaryData.empty()) {
+      bodyPtr = reinterpret_cast<const char *>(binaryData.data());
+      bodyLen = binaryData.size();
+    }
+
+    std::cout
+        << "[HTTP Server] sendBinaryResponse: sending response for request "
+        << requestId << ", status: " << code << ", body length: " << bodyLen
+        << std::endl;
+
+    return send_response(requestId.c_str(), code, headersJson.c_str(), bodyPtr,
+                         static_cast<int>(bodyLen));
   });
 }
 

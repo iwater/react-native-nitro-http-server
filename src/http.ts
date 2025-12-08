@@ -405,7 +405,7 @@ export class ServerResponse extends EventEmitter {
      * Ends the response
      */
     end(
-        chunkOrCallback?: string | Buffer | (() => void),
+        chunkOrCallback?: string | Buffer | ArrayBuffer | ArrayBufferView | (() => void),
         encodingOrCallback?: BufferEncoding | (() => void),
         callback?: () => void
     ): this {
@@ -413,7 +413,7 @@ export class ServerResponse extends EventEmitter {
             return this;
         }
 
-        let chunk: string | Buffer | undefined;
+        let chunk: string | Buffer | ArrayBuffer | ArrayBufferView | undefined;
         let encoding: BufferEncoding = 'utf-8';
         let cb: (() => void) | undefined;
 
@@ -430,7 +430,57 @@ export class ServerResponse extends EventEmitter {
             }
         }
 
-        // Write final chunk if provided
+        // Handle binary chunk (ArrayBuffer or View)
+        if (chunk && typeof chunk === 'object' &&
+            (chunk instanceof ArrayBuffer || ArrayBuffer.isView(chunk))) {
+
+            // Prepare buffer
+            const buffer = chunk instanceof ArrayBuffer
+                ? chunk
+                : (chunk.byteLength === chunk.buffer.byteLength && chunk.byteOffset === 0)
+                    ? chunk.buffer
+                    : chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
+
+            // Use internal binary response path
+            // Collect headers
+            const headers: Record<string, string> = {};
+            for (const [key, value] of this._headers) {
+                if (Array.isArray(value)) {
+                    headers[key] = value.join(', ');
+                } else {
+                    headers[key] = String(value);
+                }
+            }
+
+            const headersJson = JSON.stringify(headers);
+
+            this._nativeServer.sendBinaryResponse(this._requestId, this.statusCode, headersJson, buffer as ArrayBuffer)
+                .then(() => {
+                    this._finished = true;
+                    this.writableFinished = true;
+                    this.emit('finish');
+
+                    // Resolve the native request promise
+                    this._resolveNativeRequest({
+                        statusCode: this.statusCode,
+                        headers: headers,
+                        body: ''
+                    });
+
+                    if (cb) cb();
+                })
+                .catch((err) => {
+                    this.emit('error', err);
+                });
+
+            this._ended = true;
+            this.writableEnded = true;
+            this.headersSent = true;
+            this.writable = false;
+            return this;
+        }
+
+        // Write final chunk if provided (String legacy path)
         if (chunk !== undefined) {
             // We can't use write() here directly because we want to sequence it with endResponse
             // But write() is fire-and-forget.
@@ -503,6 +553,8 @@ export class ServerResponse extends EventEmitter {
     get finished(): boolean {
         return this._finished;
     }
+
+
 }
 
 // ========== Server ==========
