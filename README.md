@@ -421,7 +421,7 @@ curl http://localhost:8080/api/test
 
 ## 📝 Changelog
 
-### 1.0.0 (2025-12-04)
+### 1.0.0 (2025-12-08)
 
 - 🎉 Initial release.
 - ✅ Full implementation based on Nitro Modules.
