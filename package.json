@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-http-server",
-  "version": "0.1.6",
+  "version": "0.2.3",
   "description": "React Native HTTP Server with Nitro Modules",
   "main": "./lib/index.js",
   "module": "./lib/index.js",
@@ -35,7 +35,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "events": "^3.3.0",
+    "eventemitter3": "^5.0.1",
     "react-native-nitro-modules": "^0.31.10"
   },
   "devDependencies": {

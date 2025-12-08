@@ -1,5 +1,5 @@
-import { EventEmitter } from 'events';
-import type { HttpRequest, HttpResponse } from './HttpServer.nitro';
+import { EventEmitter } from 'eventemitter3';
+import type { HttpServer as NitroHttpServer, HttpRequest, HttpResponse } from './HttpServer.nitro';
 type RequestListener = (req: IncomingMessage, res: ServerResponse) => void;
 interface ServerOptions {
     IncomingMessage?: typeof IncomingMessage;
@@ -29,10 +29,11 @@ export declare class IncomingMessage extends EventEmitter {
     readonly httpVersionMinor: number;
     readable: boolean;
     complete: boolean;
-    private _body;
-    private _bodyEmitted;
     private _requestId;
-    constructor(request: HttpRequest);
+    private _nativeServer;
+    private _paused;
+    private _reading;
+    constructor(request: HttpRequest, nativeServer: NitroHttpServer);
     /**
      * Convert headers to lowercase keys (Node.js convention)
      */
@@ -42,12 +43,13 @@ export declare class IncomingMessage extends EventEmitter {
      */
     private _toRawHeaders;
     /**
-     * Emit body data (called internally after listeners are attached)
+     * Start pushing data when listeners are attached
      */
-    _emitBody(): void;
+    _startReading(): void;
     read(_size?: number): Buffer | null;
     pause(): this;
     resume(): this;
+    private _pump;
     setEncoding(_encoding: string): this;
     destroy(_error?: Error): this;
     pipe<T extends NodeJS.WritableStream>(destination: T): T;
@@ -61,15 +63,14 @@ export declare class ServerResponse extends EventEmitter {
     statusMessage: string;
     headersSent: boolean;
     private _headers;
-    private _body;
-    private _ended;
     private _requestId;
-    private _sendResponse;
+    private _nativeServer;
     private _finished;
+    private _resolveNativeRequest;
     writable: boolean;
     writableEnded: boolean;
     writableFinished: boolean;
-    constructor(requestId: string, sendResponse: (response: HttpResponse) => Promise<boolean>);
+    constructor(requestId: string, nativeServer: NitroHttpServer, resolveNativeRequest: (response: HttpResponse) => void);
     /**
      * Sets a single header value
      */
@@ -102,10 +103,12 @@ export declare class ServerResponse extends EventEmitter {
      * Writes data to response body
      */
     write(chunk: string | Buffer, encodingOrCallback?: BufferEncoding | (() => void), callback?: () => void): boolean;
+    private _ended;
     /**
      * Ends the response
      */
     end(chunkOrCallback?: string | Buffer | (() => void), encodingOrCallback?: BufferEncoding | (() => void), callback?: () => void): this;
+    private _finalizeResponse;
     /**
      * Flushes headers (no-op in our implementation)
      */
@@ -115,10 +118,6 @@ export declare class ServerResponse extends EventEmitter {
      */
     cork(): void;
     uncork(): void;
-    /**
-     * Constructs and sends the response via native layer
-     */
-    private _sendNativeResponse;
     get finished(): boolean;
 }
 /**
@@ -128,6 +127,7 @@ export declare class ServerResponse extends EventEmitter {
 export declare class Server extends EventEmitter {
     listening: boolean;
     private _port;
+    private _host;
     private _requestListener?;
     private _nativeServer;
     private _options;

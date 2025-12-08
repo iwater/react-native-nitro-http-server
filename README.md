@@ -1,48 +1,48 @@
 # React Native HTTP Server
 
-一个高性能的 React Native HTTP 服务器库，基于 Rust 实现，支持动态请求处理和静态文件服务。
+A high-performance React Native HTTP server library, implemented in Rust, supporting dynamic request handling and static file serving.
 
-## ✨ 特性
+## ✨ Features
 
-- 🚀 **高性能**: 基于 Rust 的 Actix-web 框架，性能卓越
-- 📱 **跨平台**: 支持 iOS 和 Android
-- 🔄 **异步处理**: 使用 Nitro Modules 提供原生异步 API
-- 📁 **静态文件服务**: 内置静态文件服务器支持
-- 🎯 **简单易用**: TypeScript 友好的 API 设计
-- ⚡ **零拷贝**: 直接通过 FFI 调用 Rust 代码
+- 🚀 **High Performance**: Built on Rust's Actix-web framework, delivering exceptional performance.
+- 📱 **Cross-Platform**: Supports iOS and Android.
+- 🔄 **Asynchronous**: Uses Nitro Modules to provide native async APIs.
+- 📁 **Static File Serving**: Built-in static file server support.
+- 🎯 **Easy to Use**: TypeScript-friendly API design.
+- ⚡ **Zero Copy**: Direct FFI calls to Rust code.
 
-## 📦 安装
+## 📦 Installation
 
 ```bash
 npm install react-native-nitro-http-server
-# 或
+# or
 yarn add react-native-nitro-http-server
 ```
 
-### iOS 配置
+### iOS Configuration
 
-运行 pod install:
+Run pod install:
 
 ```bash
 cd ios && pod install
 ```
 
-### Android 配置
+### Android Configuration
 
-无需额外配置，自动链接。
+No extra configuration needed, autolinking is supported.
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-### 基础 HTTP 服务器
+### Basic HTTP Server
 
 ```typescript
 import ReactNativeHttpServer from 'react-native-nitro-http-server';
 
 const server = new ReactNativeHttpServer();
 
-// 启动服务器
+// Start server
 await server.start(8080, async (request) => {
-  console.log(`收到请求: ${request.method} ${request.path}`);
+  console.log(`Received request: ${request.method} ${request.path}`);
   
   return {
     statusCode: 200,
@@ -56,13 +56,13 @@ await server.start(8080, async (request) => {
   };
 });
 
-console.log('服务器运行在 http://localhost:8080');
+console.log('Server running at http://localhost:8080');
 
-// 停止服务器
+// Stop server
 // await server.stop();
 ```
 
-### 静态文件服务器
+### Static File Server
 
 ```typescript
 import ReactNativeHttpServer from 'react-native-nitro-http-server';
@@ -70,25 +70,46 @@ import RNFS from 'react-native-fs';
 
 const server = new ReactNativeHttpServer();
 
-// 启动静态文件服务器
+// Start static file server
 const staticDir = RNFS.DocumentDirectoryPath + '/www';
 await server.startStaticServer(8080, staticDir);
 
-console.log(`静态文件服务器运行在 http://localhost:8080`);
-console.log(`服务目录: ${staticDir}`);
+console.log(`Static file server running at http://localhost:8080`);
+console.log(`Serving directory: ${staticDir}`);
 
-// 停止静态服务器
+// Stop static server
 // await server.stopStaticServer();
 ```
 
-### RESTful API 示例
+### App Server (Hybrid Mode)
+
+Supports both static file serving and dynamic API handling. It prioritizes serving static files; if the file does not exist, it invokes the callback function.
+
+```typescript
+import ReactNativeHttpServer from 'react-native-nitro-http-server';
+import RNFS from 'react-native-fs';
+
+const server = new ReactNativeHttpServer();
+const staticDir = RNFS.DocumentDirectoryPath + '/www';
+
+// Start app server (hybrid mode)
+await server.startAppServer(8080, staticDir, async (request) => {
+  // This callback is executed when the static file is not found
+  return {
+    statusCode: 200,
+    body: `Dynamic response for ${request.path}`,
+  };
+});
+```
+
+### RESTful API Example
 
 ```typescript
 import ReactNativeHttpServer from 'react-native-nitro-http-server';
 
 const server = new ReactNativeHttpServer();
 
-// 模拟数据库
+// Mock database
 const users = [
   { id: 1, name: 'Alice' },
   { id: 2, name: 'Bob' },
@@ -97,7 +118,7 @@ const users = [
 await server.start(8080, async (request) => {
   const { method, path } = request;
   
-  // GET /api/users - 获取所有用户
+  // GET /api/users - Get all users
   if (method === 'GET' && path === '/api/users') {
     return {
       statusCode: 200,
@@ -106,7 +127,7 @@ await server.start(8080, async (request) => {
     };
   }
   
-  // GET /api/users/:id - 获取单个用户
+  // GET /api/users/:id - Get a single user
   const userMatch = path.match(/^\/api\/users\/(\d+)$/);
   if (method === 'GET' && userMatch) {
     const userId = parseInt(userMatch[1]);
@@ -126,7 +147,7 @@ await server.start(8080, async (request) => {
     }
   }
   
-  // POST /api/users - 创建新用户
+  // POST /api/users - Create a new user
   if (method === 'POST' && path === '/api/users') {
     const newUser = JSON.parse(request.body || '{}');
     newUser.id = users.length + 1;
@@ -139,7 +160,7 @@ await server.start(8080, async (request) => {
     };
   }
   
-  // 404 - 路由未找到
+  // 404 - Route not found
   return {
     statusCode: 404,
     body: JSON.stringify({ error: 'Route not found' }),
@@ -147,23 +168,43 @@ await server.start(8080, async (request) => {
 });
 ```
 
-## 📖 API 文档
+### Node.js Compatible API
+
+Provides an interface compatible with Node.js `http` module, facilitating migration of existing code or using adapters for frameworks like Express/Koa.
+
+```typescript
+import { createServer } from 'react-native-nitro-http-server';
+
+const server = createServer((req, res) => {
+  console.log(req.method, req.url);
+  
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'text/plain');
+  res.end('Hello from Node.js compatible API!');
+});
+
+server.listen(8080, () => {
+  console.log('Server listening on port 8080');
+});
+```
+
+## 📖 API Documentation
 
 ### ReactNativeHttpServer
 
-主要的服务器类。
+The main server class.
 
 #### `start(port: number, handler: RequestHandler): Promise<boolean>`
 
-启动 HTTP 服务器。
+Starts the HTTP server.
 
-**参数**:
-- `port`: 端口号（1024-65535）
-- `handler`: 请求处理函数，接收 `HttpRequest` 并返回 `HttpResponse`
+**Parameters**:
+- `port`: Port number (1024-65535)
+- `handler`: Request handler function, receives `HttpRequest` and returns `HttpResponse`
 
-**返回**: 如果启动成功返回 `true`
+**Returns**: `true` if started successfully.
 
-**示例**:
+**Example**:
 ```typescript
 const success = await server.start(8080, async (request) => {
   return {
@@ -175,24 +216,24 @@ const success = await server.start(8080, async (request) => {
 
 #### `stop(): Promise<void>`
 
-停止 HTTP 服务器。
+Stops the HTTP server.
 
-**示例**:
+**Example**:
 ```typescript
 await server.stop();
 ```
 
 #### `startStaticServer(port: number, rootDir: string): Promise<boolean>`
 
-启动静态文件服务器。
+Starts the static file server.
 
-**参数**:
-- `port`: 端口号
-- `rootDir`: 静态文件根目录的绝对路径
+**Parameters**:
+- `port`: Port number
+- `rootDir`: Absolute path to the static file root directory
 
-**返回**: 如果启动成功返回 `true`
+**Returns**: `true` if started successfully.
 
-**示例**:
+**Example**:
 ```typescript
 import RNFS from 'react-native-fs';
 
@@ -204,39 +245,56 @@ const success = await server.startStaticServer(
 
 #### `stopStaticServer(): Promise<void>`
 
-停止静态文件服务器。
+Stops the static file server.
 
 #### `getStats(): Promise<ServerStats>`
 
-获取服务器统计信息。
+Gets server statistics.
 
-**返回**: 包含以下字段的对象：
-- `totalRequests`: 总请求数
-- `activeConnections`: 活动连接数
-- `bytesSent`: 发送的字节数
-- `bytesReceived`: 接收的字节数
-- `uptime`: 运行时间（秒）
-- `errorCount`: 错误计数
+**Returns**: An object containing the following fields:
+- `totalRequests`: Total request count
+- `activeConnections`: Active active connections
+- `bytesSent`: Bytes sent
+- `bytesReceived`: Bytes received
+- `uptime`: Uptime in seconds
+- `errorCount`: Error count
 
 #### `isServerRunning(): boolean`
 
-检查动态服务器是否正在运行。
+Checks if the dynamic server is running.
 
 #### `isStaticRunning(): boolean`
 
-检查静态服务器是否正在运行。
+Checks if the static server is running.
 
-### 类型定义
+#### `startAppServer(port: number, rootDir: string, handler: RequestHandler): Promise<boolean>`
+
+Starts the app server (hybrid mode). The server will first attempt to find the corresponding static file in `rootDir`. If found and the method is GET, it returns the file content directly. Otherwise, it forwards the request to the `handler`.
+
+**Parameters**:
+- `port`: Port number
+- `rootDir`: Static file root directory
+- `handler`: Request handler
+
+#### `stopAppServer(): Promise<void>`
+
+Stops the app server.
+
+#### `static createStaticServer(port: number, staticDir: string): Promise<ReactNativeHttpServer>`
+
+Static convenience method to create and start a static file server instance.
+
+### Type Definitions
 
 #### HttpRequest
 
 ```typescript
 interface HttpRequest {
-  requestId: string;      // 请求唯一ID
-  method: string;         // HTTP 方法 (GET, POST, PUT, DELETE, etc.)
-  path: string;           // 请求路径
-  headers: Record<string, string>;  // 请求头
-  body?: string;          // 请求体（可选）
+  requestId: string;      // Unique request ID
+  method: string;         // HTTP Method (GET, POST, PUT, DELETE, etc.)
+  path: string;           // Request path
+  headers: Record<string, string>;  // Request headers
+  body?: string;          // Request body (optional)
 }
 ```
 
@@ -244,9 +302,9 @@ interface HttpRequest {
 
 ```typescript
 interface HttpResponse {
-  statusCode: number;     // HTTP 状态码 (200, 404, 500, etc.)
-  headers?: Record<string, string>;  // 响应头（可选）
-  body?: string;          // 响应体（可选）
+  statusCode: number;     // HTTP Status Code (200, 404, 500, etc.)
+  headers?: Record<string, string>;  // Response headers (optional)
+  body?: string;          // Response body (optional)
 }
 ```
 
@@ -256,9 +314,22 @@ interface HttpResponse {
 type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResponse;
 ```
 
-请求处理器可以返回 Promise 或直接返回响应对象。
+The request handler can return a Promise or a response object directly.
 
-## 🏗️ 架构
+### Node.js Compatible Layer
+
+Exports the following objects and functions compatible with Node.js `http` module:
+
+- `createServer(requestListener?: (req: IncomingMessage, res: ServerResponse) => void): Server`
+- `Server` class
+- `IncomingMessage` class
+- `ServerResponse` class
+- `STATUS_CODES`
+- `METHODS`
+
+Note: Due to React Native environment limitations, streaming APIs may currently be implemented via full data buffering.
+
+## 🏗️ Architecture
 
 ```
 ┌─────────────────────────────────────┐
@@ -277,89 +348,96 @@ type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResp
 └─────────────────────────────────────┘
 ```
 
-### 技术栈
+### Tech Stack
 
-- **JavaScript 层**: TypeScript, React Native
-- **桥接层**: Nitro Modules (C++)
-- **核心层**: Rust (Actix-web, Tokio)
+- **JavaScript Layer**: TypeScript, React Native
+- **Bridge Layer**: Nitro Modules (C++)
+- **Core Layer**: Rust (Actix-web, Tokio)
 
-### 数据流
+### Data Flow
 
-1. **请求到达**: Rust Actix-web 服务器接收 HTTP 请求
-2. **C 回调**: 通过 FFI 调用 C 回调函数
-3. **C++ 转换**: C++ 将 C 结构体转换为 Nitro 类型
-4. **JavaScript 调用**: 通过 Nitro Modules 调用 JavaScript 处理器
-5. **响应返回**: JavaScript 返回响应 → C++ → C → Rust → HTTP 客户端
+1.  **Request Arrival**: Rust Actix-web server receives HTTP request.
+2.  **C Callback**: Calls C callback function via FFI.
+3.  **C++ Conversion**: C++ converts C struct to Nitro types.
+4.  **JavaScript Call**: Calls JavaScript handler via Nitro Modules.
+5.  **Response Return**: JavaScript returns response → C++ → C → Rust → HTTP Client.
 
-## 🔧 常见问题
+## 🔧 FAQ
 
-### Q: 为什么服务器启动失败？
+### Q: Why does the server fail to start?
 
-**A**: 可能的原因：
-1. **端口被占用**: 尝试更换端口号
-2. **权限不足**: 某些端口（如 80, 443）需要 root 权限
-3. **防火墙**: 检查防火墙设置
+**A**: Possible reasons:
+1.  **Port In Use**: Try changing the port number.
+2.  **Insufficient Permissions**: Some ports (like 80, 443) require root privileges.
+3.  **Firewall**: Check firewall settings.
 
-### Q: 如何处理大文件上传？
+### Q: How to handle large file uploads?
 
-**A**: 当前版本的 `body` 字段是字符串类型，不适合处理大文件。建议：
-- 使用静态文件服务器
-- 在 Rust 层添加流式处理支持
+**A**: The `body` field in the current version is a string type, which is not suitable for large files. Suggestions:
+- Use the static file server.
+- Add streaming support in the Rust layer.
 
-### Q: 支持 HTTPS 吗？
+### Q: Is HTTPS supported?
 
-**A**: 当前版本不直接支持 HTTPS。建议使用反向代理（如 Nginx）来提供 HTTPS 支持。
+**A**: The current version does not directly support HTTPS. It is recommended to use a reverse proxy (like Nginx) to provide HTTPS support.
 
-### Q: 性能如何？
+### Q: How is the performance?
 
-**A**: 基于 Rust 的 Actix-web 框架，性能非常优秀：
-- 单机可处理数万 QPS
-- 低延迟、高并发
-- 零拷贝优化
+**A**: Built on Rust's Actix-web framework, performance is excellent. Here are the benchmark results (Test Environment: MacMini M4, 1 Thread, 2 Connections):
 
-### Q: 可以同时运行动态服务器和静态服务器吗？
+| Mode | QPS (Req/Sec) | Latency (Avg) | Transfer Rate |
+| :--- | :--- | :--- | :--- |
+| **Basic HTTP Server**<br>(ReactNativeHttpServer.start) | **~33,267** | **~83.45us** | **~4.86MB** |
+| **Node.js Compatible Layer**<br>(Koa via createServer) | **~4,421** | **~2.76ms** | **~682.22KB** |
 
-**A**: 可以，但它们必须使用不同的端口：
+*Note: The Node.js compatible layer has lower performance due to additional JavaScript bridging and object conversion, but it is still sufficient for most application scenarios.*
+
+### Q: Can I run dynamic and static servers simultaneously?
+
+**A**: Yes. You can either start the dynamic server and static server separately (using different ports) or use `startAppServer` to provide both static file and dynamic API services on the same port.
 
 ```typescript
-// 动态服务器在 8080
+// Method 1: Use startAppServer (Recommended)
+await server.startAppServer(8080, staticDir, apiHandler);
+
+// Method 2: Start separately (Different ports)
 await server.start(8080, handler);
 
-// 静态服务器在 8081
+// Static server on 8081
 await server.startStaticServer(8081, staticDir);
 ```
 
-### Q: 如何调试服务器问题？
+### Q: How to debug server issues?
 
-**A**: 
-1. 检查服务器日志（Xcode/Logcat）
-2. 使用 `getStats()` 查看统计信息
-3. 使用工具测试（curl, Postman）
+**A**:
+1.  Check server logs (Xcode/Logcat).
+2.  Use `getStats()` to view statistics.
+3.  Use tools to test (curl, Postman).
 
 ```bash
-# 测试服务器
+# Test server
 curl http://localhost:8080/api/test
 ```
 
-## 📝 更新日志
+## 📝 Changelog
 
 ### 1.0.0 (2025-12-04)
 
-- 🎉 初始版本发布
-- ✅ 基于 Nitro Modules 的完整实现
-- ✅ 支持动态请求处理
-- ✅ 支持静态文件服务
-- ✅ iOS 和 Android 支持
+- 🎉 Initial release.
+- ✅ Full implementation based on Nitro Modules.
+- ✅ Dynamic request handling support.
+- ✅ Static file serving support.
+- ✅ iOS and Android support.
 
-## 📄 许可证
+## 📄 License
 
 MIT
 
-## 🤝 贡献
+## 🤝 Contribution
 
-欢迎提交 Issue 和 Pull Request！
+Issues and Pull Requests are welcome!
 
-## 🔗 相关链接
+## 🔗 Related Links
 
 - [Nitro Modules](https://github.com/mrousavy/nitro)
 - [Actix-web](https://actix.rs/)

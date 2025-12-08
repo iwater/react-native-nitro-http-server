@@ -28,9 +28,10 @@ typedef void (*RequestCallback)(HttpRequest* request);
 /// 启动HTTP服务器
 /// 
 /// @param port 服务器端口号
+/// @param host 监听的IP地址（例如 "127.0.0.1" 或 "0.0.0.0"）,传入NULL则默认为 "127.0.0.1"
 /// @param callback 请求回调函数，当收到请求时调用
 /// @return 如果服务器启动成功返回true，否则返回false
-bool start_server(int port, RequestCallback callback);
+bool start_server(int port, const char* host, RequestCallback callback);
 
 /// 发送HTTP响应
 /// 
@@ -64,9 +65,10 @@ void free_string(char* s);
 /// 启动静态文件HTTP服务器
 /// 
 /// @param port 服务器端口号
+/// @param host 监听的IP地址（例如 "127.0.0.1" 或 "0.0.0.0"）,传入NULL则默认为 "127.0.0.1"
 /// @param root_dir 静态文件根目录路径
 /// @return 如果服务器启动成功返回true，否则返回false
-bool start_static_server(int port, const char* root_dir);
+bool start_static_server(int port, const char* host, const char* root_dir);
 
 /// 停止静态文件HTTP服务器
 void stop_static_server(void);
@@ -74,10 +76,11 @@ void stop_static_server(void);
 /// 启动App HTTP服务器（混合静态文件和回调）
 /// 
 /// @param port 服务器端口号
+/// @param host 监听的IP地址（例如 "127.0.0.1" 或 "0.0.0.0"）,传入NULL则默认为 "127.0.0.1"
 /// @param root_dir 静态文件根目录路径
 /// @param callback 请求回调函数，当静态文件不存在或不是GET请求时调用
 /// @return 如果服务器启动成功返回true，否则返回false
-bool start_app_server(int port, const char* root_dir, RequestCallback callback);
+bool start_app_server(int port, const char* host, const char* root_dir, RequestCallback callback);
 
 /// 停止App HTTP服务器
 void stop_app_server(void);
@@ -108,7 +111,11 @@ bool write_response_chunk(const char* request_id, const char* chunk, int chunk_l
 /// 
 /// @param request_id 请求ID
 /// @return 如果成功结束响应返回true，否则返回false
-bool end_response(const char* request_id);
+/// @param request_id 请求ID
+/// @param status_code HTTP状态码
+/// @param headers_json 响应头 JSON 字符串
+/// @return 如果成功结束响应返回true，否则返回false
+bool end_response(const char* request_id, int status_code, const char* headers_json);
 
 #ifdef __cplusplus
 }

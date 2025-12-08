@@ -101,10 +101,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"events@npm:^3.3.0":
-  version: 3.3.0
-  resolution: "events@npm:3.3.0"
-  checksum: 10c0/d6b6f2adbccbcda74ddbab52ed07db727ef52e31a61ed26db9feb7dc62af7fc8e060defa65e5f8af9449b86b52cc1a1f6a79f2eafcf4e62add2b7a1fa4a432f6
+"eventemitter3@npm:^5.0.1":
+  version: 5.0.1
+  resolution: "eventemitter3@npm:5.0.1"
+  checksum: 10c0/4ba5c00c506e6c786b4d6262cfbce90ddc14c10d4667e5c83ae993c9de88aa856033994dd2b35b83e8dc1170e224e66a319fa80adc4c32adcd2379bbc75da814
   languageName: node
   linkType: hard
 
@@ -178,7 +178,7 @@ __metadata:
   dependencies:
     "@types/events": "npm:^3"
     "@types/node": "npm:^24.10.1"
-    events: "npm:^3.3.0"
+    eventemitter3: "npm:^5.0.1"
     nitrogen: "npm:^0.31.10"
     react-native-nitro-modules: "npm:^0.31.10"
     typescript: "npm:^5.9.3"

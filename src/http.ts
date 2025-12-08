@@ -1,7 +1,7 @@
 // src/http.ts
 // Node.js Compatible HTTP Interface for React Native
 
-import { EventEmitter } from 'events';
+import { EventEmitter } from 'eventemitter3';
 import { NitroModules } from 'react-native-nitro-modules';
 import type { HttpServer as NitroHttpServer, HttpRequest, HttpResponse } from './HttpServer.nitro';
 
@@ -102,18 +102,19 @@ export class IncomingMessage extends EventEmitter {
     complete: boolean = false;
 
     // Internal
-    private _body: string;
-    private _bodyEmitted: boolean = false;
     private _requestId: string;
+    private _nativeServer: NitroHttpServer;
+    private _paused: boolean = false;
+    private _reading: boolean = false;
 
-    constructor(request: HttpRequest) {
+    constructor(request: HttpRequest, nativeServer: NitroHttpServer) {
         super();
+        this._nativeServer = nativeServer;
         this._requestId = request.requestId;
         this.method = request.method;
         this.url = request.path;
         this.headers = this._normalizeHeaders(request.headers);
         this.rawHeaders = this._toRawHeaders(request.headers);
-        this._body = request.body || '';
     }
 
     /**
@@ -150,37 +151,59 @@ export class IncomingMessage extends EventEmitter {
     }
 
     /**
-     * Emit body data (called internally after listeners are attached)
+     * Start pushing data when listeners are attached
      */
-    _emitBody(): void {
-        if (this._bodyEmitted) return;
-        this._bodyEmitted = true;
-
-        // Use setImmediate/setTimeout to allow event listeners to be attached
+    _startReading(): void {
+        // Use setImmediate to allow event listeners to be attached first
         setTimeout(() => {
-            if (this._body) {
-                this.emit('data', Buffer.from(this._body, 'utf-8'));
-            }
-            this.readable = false;
-            this.complete = true;
-            this.emit('end');
+            this.resume();
         }, 0);
     }
 
-    // Stream-like methods (minimal implementation)
+    // Stream-like methods
     read(_size?: number): Buffer | null {
-        if (this._bodyEmitted || !this._body) return null;
-        this._bodyEmitted = true;
-        return Buffer.from(this._body, 'utf-8');
+        // In our push-based simulation, read() just resumes if paused
+        if (this._paused) {
+            this.resume();
+        }
+        return null;
     }
 
     pause(): this {
+        this._paused = true;
         return this;
     }
 
     resume(): this {
-        this._emitBody();
+        this._paused = false;
+        this._pump();
         return this;
+    }
+
+    private async _pump(): Promise<void> {
+        if (this._reading || this._paused || !this.readable) return;
+        this._reading = true;
+
+        try {
+            while (!this._paused && this.readable) {
+                const chunk = await this._nativeServer.readRequestBodyChunk(this._requestId);
+
+                if (!chunk || chunk.length === 0) {
+                    this.readable = false;
+                    this.complete = true;
+                    this.emit('end');
+                    break;
+                }
+
+                this.emit('data', Buffer.from(chunk, 'utf-8'));
+                // Small delay to yield to other tasks?
+                // await new Promise(r => setTimeout(r, 0)); 
+            }
+        } catch (err) {
+            this.emit('error', err);
+        } finally {
+            this._reading = false;
+        }
     }
 
     setEncoding(_encoding: string): this {
@@ -201,7 +224,7 @@ export class IncomingMessage extends EventEmitter {
                 (destination as any).end();
             }
         });
-        this._emitBody();
+        this.resume();
         return destination;
     }
 }
@@ -221,14 +244,11 @@ export class ServerResponse extends EventEmitter {
     headersSent: boolean = false;
     private _headers: Map<string, string | number | readonly string[]> = new Map();
 
-    // Body
-    private _body: Buffer[] = [];
-    private _ended: boolean = false;
-
     // Internal
     private _requestId: string;
-    private _sendResponse: (response: HttpResponse) => Promise<boolean>;
+    private _nativeServer: NitroHttpServer;
     private _finished: boolean = false;
+    private _resolveNativeRequest: (response: HttpResponse) => void;
 
     // Writable stream
     writable: boolean = true;
@@ -237,11 +257,13 @@ export class ServerResponse extends EventEmitter {
 
     constructor(
         requestId: string,
-        sendResponse: (response: HttpResponse) => Promise<boolean>
+        nativeServer: NitroHttpServer,
+        resolveNativeRequest: (response: HttpResponse) => void
     ) {
         super();
         this._requestId = requestId;
-        this._sendResponse = sendResponse;
+        this._nativeServer = nativeServer;
+        this._resolveNativeRequest = resolveNativeRequest;
     }
 
     /**
@@ -354,23 +376,30 @@ export class ServerResponse extends EventEmitter {
             cb = callback;
         }
 
-        let buffer: Buffer;
+        let strChunk: string;
         if (Buffer.isBuffer(chunk)) {
-            buffer = chunk;
+            strChunk = chunk.toString(encoding);
         } else {
-            buffer = Buffer.from(chunk, encoding);
+            strChunk = String(chunk);
         }
 
-        this._body.push(buffer);
+        // Mark headers as sent conceptually (though we send them at the end internally)
         this.headersSent = true;
 
-        if (cb) {
-            // Simulate async callback
-            setTimeout(cb, 0);
-        }
+        // Perform async write to native layer
+        this._nativeServer.writeResponseChunk(this._requestId, strChunk)
+            .then(() => {
+                if (cb) cb();
+            })
+            .catch(err => {
+                this.emit('error', err);
+            });
 
         return true;
     }
+
+    // Flag to track ended state
+    private _ended: boolean = false;
 
     /**
      * Ends the response
@@ -403,7 +432,17 @@ export class ServerResponse extends EventEmitter {
 
         // Write final chunk if provided
         if (chunk !== undefined) {
-            this.write(chunk, encoding);
+            // We can't use write() here directly because we want to sequence it with endResponse
+            // But write() is fire-and-forget.
+            // Ideally we should wait, but the node API is sync.
+            // We'll call native writeResponseChunk then endResponse.
+
+            let strChunk = Buffer.isBuffer(chunk) ? chunk.toString(encoding) : String(chunk);
+            this._nativeServer.writeResponseChunk(this._requestId, strChunk)
+                .then(() => this._finalizeResponse(cb))
+                .catch(err => this.emit('error', err));
+        } else {
+            this._finalizeResponse(cb);
         }
 
         this._ended = true;
@@ -411,17 +450,41 @@ export class ServerResponse extends EventEmitter {
         this.headersSent = true;
         this.writable = false;
 
-        // Send response via native layer
-        this._sendNativeResponse().then(() => {
-            this._finished = true;
-            this.writableFinished = true;
-            this.emit('finish');
-            if (cb) cb();
-        }).catch((err) => {
-            this.emit('error', err);
-        });
-
         return this;
+    }
+
+    private _finalizeResponse(cb?: () => void) {
+        // Collect headers
+        const headers: Record<string, string> = {};
+        for (const [key, value] of this._headers) {
+            if (Array.isArray(value)) {
+                headers[key] = value.join(', ');
+            } else {
+                headers[key] = String(value);
+            }
+        }
+
+        const headersJson = JSON.stringify(headers);
+
+        this._nativeServer.endResponse(this._requestId, this.statusCode, headersJson)
+            .then(() => {
+                this._finished = true;
+                this.writableFinished = true;
+                this.emit('finish');
+
+                // Resolve the native request promise to prevent timeout/hangs in the bridge if it's waiting
+                // We send a dummy response because we handled it via streaming
+                this._resolveNativeRequest({
+                    statusCode: this.statusCode,
+                    headers: headers,
+                    body: '' // Body handled via streaming
+                });
+
+                if (cb) cb();
+            })
+            .catch((err) => {
+                this.emit('error', err);
+            });
     }
 
     /**
@@ -436,33 +499,6 @@ export class ServerResponse extends EventEmitter {
      */
     cork(): void { }
     uncork(): void { }
-
-    /**
-     * Constructs and sends the response via native layer
-     */
-    private async _sendNativeResponse(): Promise<void> {
-        // Combine body chunks
-        const body = Buffer.concat(this._body).toString('utf-8');
-
-        // Convert headers to Record<string, string>
-        const headers: Record<string, string> = {};
-        for (const [key, value] of this._headers) {
-            if (Array.isArray(value)) {
-                headers[key] = value.join(', ');
-            } else {
-                headers[key] = String(value);
-            }
-        }
-
-        // Construct response object
-        const response: HttpResponse = {
-            statusCode: this.statusCode,
-            headers,
-            body,
-        };
-
-        await this._sendResponse(response);
-    }
 
     get finished(): boolean {
         return this._finished;
@@ -479,6 +515,7 @@ export class Server extends EventEmitter {
     // Server state
     listening: boolean = false;
     private _port: number = 0;
+    private _host: string = '127.0.0.1';
     private _requestListener?: RequestListener;
 
     // Native server
@@ -520,9 +557,17 @@ export class Server extends EventEmitter {
 
         this._port = port;
 
-        // Parse callback from overloaded arguments
+        // Parse hostname and callback from overloaded arguments
+        let hostname: string | undefined;
         let cb: (() => void) | undefined;
-        if (typeof hostnameOrCallback === 'function') {
+        if (typeof hostnameOrCallback === 'string') {
+            hostname = hostnameOrCallback;
+            if (typeof backlogOrCallback === 'function') {
+                cb = backlogOrCallback;
+            } else {
+                cb = callback;
+            }
+        } else if (typeof hostnameOrCallback === 'function') {
             cb = hostnameOrCallback;
         } else if (typeof backlogOrCallback === 'function') {
             cb = backlogOrCallback;
@@ -530,8 +575,13 @@ export class Server extends EventEmitter {
             cb = callback;
         }
 
+        // Set the host
+        if (hostname) {
+            this._host = hostname;
+        }
+
         // Start the native server with our request handler
-        this._nativeServer.start(port, this._handleNativeRequest.bind(this))
+        this._nativeServer.start(port, this._handleNativeRequest.bind(this), hostname)
             .then((success) => {
                 if (success) {
                     this.listening = true;
@@ -579,7 +629,7 @@ export class Server extends EventEmitter {
     address(): AddressInfo | string | null {
         if (!this.listening) return null;
         return {
-            address: '0.0.0.0',
+            address: this._host,
             family: 'IPv4',
             port: this._port,
         };
@@ -591,21 +641,20 @@ export class Server extends EventEmitter {
     private _handleNativeRequest(request: HttpRequest): HttpResponse | Promise<HttpResponse> {
         return new Promise((resolve) => {
             // Create Node.js compatible request/response objects
-            const req = new IncomingMessage(request);
-            const res = new ServerResponse(request.requestId, async (response) => {
-                resolve(response);
-                return true;
-            });
+            // Pass the native server instance for streaming data access
+            const req = new IncomingMessage(request, this._nativeServer);
+            const res = new ServerResponse(request.requestId, this._nativeServer, resolve);
 
             // Emit request event
             this.emit('request', req, res);
+
+            // Trigger body reading
+            req._startReading();
 
             // Call request listener if provided
             if (this._requestListener) {
                 try {
                     this._requestListener(req, res);
-                    // Trigger body emission after handler is set up
-                    req._emitBody();
                 } catch (err) {
                     // Handle synchronous errors
                     if (!res.headersSent) {
@@ -614,9 +663,6 @@ export class Server extends EventEmitter {
                     }
                     this.emit('error', err);
                 }
-            } else {
-                // No listener, trigger body emission anyway
-                req._emitBody();
             }
         });
     }
