@@ -139,14 +139,14 @@ export class AppServer {
 export class ConfigServer {
   private _isRunning = false
 
-  async start(port: number, rootDir: string, handler: RequestHandler, config: ServerConfig, host?: string): Promise<boolean> {
+  async start(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<boolean> {
     if (this._isRunning) {
       throw new Error('Config server is already running')
     }
 
     const wrappedHandler = wrapHandler(handler)
     const configJson = JSON.stringify(config)
-    const success = await HttpServerModule.startServerWithConfig(port, rootDir, wrappedHandler, configJson, host)
+    const success = await HttpServerModule.startServerWithConfig(port, wrappedHandler, configJson, host)
     this._isRunning = success
     return success
   }
@@ -203,19 +203,18 @@ export async function createAppServer(port: number, rootDir: string, handler: Re
 /**
  * 创建并启动带配置的 App HTTP 服务器
  * @param port 端口号
- * @param rootDir 静态文件根目录路径
  * @param handler 请求处理器
- * @param config 插件配置
+ * @param config 插件配置（可包含 root_dir 指定静态文件根目录）
  * @param host 监听的IP地址
  */
-export async function createConfigServer(port: number, rootDir: string, handler: RequestHandler, config: ServerConfig, host?: string): Promise<ConfigServer> {
+export async function createConfigServer(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<ConfigServer> {
   const server = new ConfigServer()
-  await server.start(port, rootDir, handler, config, host)
+  await server.start(port, handler, config, host)
   return server
 }
 
 // 导出类型和实例
-export type { HttpRequest, ServerConfig, DirListConfig } from './HttpServer.nitro'
+export type { HttpRequest, ServerConfig, DirListConfig, StaticFileConfig } from './HttpServer.nitro'
 export { HttpServerModule }
 
 // Node.js 兼容的 HTTP 接口

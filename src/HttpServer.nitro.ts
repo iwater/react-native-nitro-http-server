@@ -46,13 +46,20 @@ export interface DirListConfig {
     show_hidden?: boolean // 是否显示隐藏文件，默认 false
 }
 
+// 静态文件服务配置
+export interface StaticFileConfig {
+    enabled?: boolean             // 是否启用静态文件服务，默认 true
+    dir_list?: DirListConfig      // 目录列表配置
+    default_index?: string[]      // 默认索引文件列表，如 ["index.html", "index.htm"]
+}
+
 // 服务器插件配置
 export interface ServerConfig {
+    root_dir?: string                         // 静态文件根目录（可选）
     webdav?: WebDavConfig
-    zip_mount?: ZipMountConfig[]  // 支持多个 Zip 文件挂载
-    mime_types?: Record<string, string>  // 自定义 MIME types 映射 (扩展名 -> MIME type)
-    dir_list?: DirListConfig              // 目录列表配置
-    default_index?: string[]              // 默认索引文件列表，如 ["index.html", "index.htm"]
+    zip_mount?: ZipMountConfig[]              // 支持多个 Zip 文件挂载
+    mime_types?: Record<string, string>       // 自定义 MIME types 映射 (扩展名 -> MIME type)
+    static_file?: StaticFileConfig            // 静态文件服务配置
 }
 
 // 请求处理器类型
@@ -164,11 +171,10 @@ export interface HttpServer extends HybridObject<{
     /**
      * 启动带配置的App HTTP服务器（支持插件如 WebDAV、Zip 挂载）
      * @param port 端口号
-     * @param rootDir 静态文件根目录路径
      * @param handler 请求处理器
-     * @param configJson 插件配置 JSON 字符串
+     * @param configJson 插件配置 JSON 字符串（可包含 root_dir 指定静态文件根目录）
      * @param host 监听的IP地址,默认为 127.0.0.1
      * @returns 是否启动成功
      */
-    startServerWithConfig(port: number, rootDir: string, handler: RequestHandler, configJson: string, host?: string): Promise<boolean>
+    startServerWithConfig(port: number, handler: RequestHandler, configJson: string, host?: string): Promise<boolean>
 }

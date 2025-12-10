@@ -47,7 +47,7 @@ public:
 
   // 带配置的 App server 方法
   std::shared_ptr<Promise<bool>> startServerWithConfig(
-      double port, const std::string &rootDir,
+      double port,
       const std::function<std::shared_ptr<Promise<
           std::variant<HttpResponse, std::shared_ptr<Promise<HttpResponse>>>>>(
           const HttpRequest &)> &handler,

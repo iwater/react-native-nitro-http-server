@@ -139,6 +139,7 @@ const staticDir = RNFS.DocumentDirectoryPath + '/www';
 
 // 配置插件
 const config = {
+  root_dir: staticDir,           // 静态文件根目录（可选）
   webdav: {
     prefix: '/webdav',           // WebDAV 路径前缀
     root: RNFS.DocumentDirectoryPath + '/webdav'
@@ -152,15 +153,18 @@ const config = {
   mime_types: {
     "myext": "application/x-custom-type" // 自定义 MIME 类型
   },
-  dir_list: {
-    enabled: true,               // 启用目录列表
-    show_hidden: false           // 显示隐藏文件（以 . 开头）
-  },
-  default_index: ["index.html", "index.htm"] // 默认索引文件
+  static_file: {
+    enabled: true,               // 启用静态文件服务
+    dir_list: {
+      enabled: true,               // 启用目录列表
+      show_hidden: false           // 显示隐藏文件（以 . 开头）
+    },
+    default_index: ["index.html", "index.htm"] // 默认索引文件
+  }
 };
 
 // 启动带插件配置的服务器
-const server = await createConfigServer(8080, staticDir, async (request) => {
+const server = await createConfigServer(8080, async (request) => {
   // 处理动态请求
   return {
     statusCode: 200,
@@ -392,20 +396,20 @@ interface HttpResponse {
 
 带插件配置支持的服务器类（WebDAV、Zip 挂载等）。
 
-#### `start(port: number, rootDir: string, handler: RequestHandler, config: ServerConfig, host?: string): Promise<boolean>`
+#### `start(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<boolean>`
 
 启动带插件配置的服务器。
 
 **参数**:
 - `port`: 端口号
-- `rootDir`: 静态文件根目录
 - `handler`: 请求处理器
-- `config`: 插件配置对象
+- `config`: 插件配置对象（包含 `root_dir`）
 - `host`: (可选) 监听的IP地址，默认为 `127.0.0.1`
 
 **示例**:
 ```typescript
 const config = {
+  root_dir: staticDir,
   webdav: {
     prefix: '/webdav',
     root: RNFS.DocumentDirectoryPath + '/webdav'
@@ -419,7 +423,7 @@ const config = {
 };
 
 const server = new ConfigServer();
-await server.start(8080, staticDir, handler, config, '0.0.0.0');
+await server.start(8080, handler, config, '0.0.0.0');
 ```
 
 #### `stop(): Promise<void>`
@@ -444,7 +448,7 @@ await server.start(8080, staticDir, handler, config, '0.0.0.0');
 
 创建并启动应用服务器（混合模式）。
 
-#### `createConfigServer(port: number, rootDir: string, handler: RequestHandler, config: ServerConfig, host?: string): Promise<ConfigServer>`
+#### `createConfigServer(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<ConfigServer>`
 
 创建并启动带插件配置的服务器。
 
@@ -476,11 +480,11 @@ interface HttpResponse {
 
 ```typescript
 interface ServerConfig {
+  root_dir?: string;             // 静态文件根目录（可选）
   webdav?: WebDavConfig;
   zip_mount?: ZipMountConfig[];  // 支持多个 Zip 文件挂载
   mime_types?: MimeTypesConfig;
-  dir_list?: DirListConfig;
-  default_index?: string[];
+  static_file?: StaticFileConfig;
 }
 
 interface WebDavConfig {
@@ -494,6 +498,12 @@ interface ZipMountConfig {
 }
 
 type MimeTypesConfig = Record<string, string>; // 扩展名 -> mime-type 映射
+
+interface StaticFileConfig {
+  enabled?: boolean;         // 启用静态文件服务 (默认: true)
+  dir_list?: DirListConfig;
+  default_index?: string[];  // 默认索引文件，如 ["index.html"]
+}
 
 interface DirListConfig {
   enabled: boolean;        // 启用目录列表

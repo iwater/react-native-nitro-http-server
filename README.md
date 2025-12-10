@@ -139,6 +139,7 @@ const staticDir = RNFS.DocumentDirectoryPath + '/www';
 
 // Configure plugins
 const config = {
+  root_dir: staticDir,           // Static file root (Optional)
   webdav: {
     prefix: '/webdav',           // WebDAV path prefix
     root: RNFS.DocumentDirectoryPath + '/webdav'
@@ -152,15 +153,18 @@ const config = {
   mime_types: {
     "myext": "application/x-custom-type" // Custom MIME type
   },
-  dir_list: {
-    enabled: true,               // Enable directory listing
-    show_hidden: false           // Show hidden files (starting with .)
-  },
-  default_index: ["index.html", "index.htm"] // Default index files
+  static_file: {
+    enabled: true,
+    dir_list: {
+      enabled: true,               // Enable directory listing
+      show_hidden: false           // Show hidden files (starting with .)
+    },
+    default_index: ["index.html", "index.htm"] // Default index files
+  }
 };
 
 // Start server with plugin configuration
-const server = await createConfigServer(8080, staticDir, async (request) => {
+const server = await createConfigServer(8080, async (request) => {
   // Handle dynamic requests
   return {
     statusCode: 200,
@@ -388,20 +392,20 @@ Stops the app server.
 
 Server with plugin configuration support (WebDAV, Zip mounting, etc.).
 
-#### `start(port: number, rootDir: string, handler: RequestHandler, config: ServerConfig, host?: string): Promise<boolean>`
+#### `start(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<boolean>`
 
 Starts the config server with plugin configuration.
 
 **Parameters**:
 - `port`: Port number
-- `rootDir`: Static files root directory
 - `handler`: Request handler
-- `config`: Plugin configuration object
+- `config`: Plugin configuration object (includes `root_dir`)
 - `host`: (Optional) IP address to bind to, defaults to `127.0.0.1`
 
 **Example**:
 ```typescript
 const config = {
+  root_dir: staticDir,
   webdav: {
     prefix: '/webdav',
     root: RNFS.DocumentDirectoryPath + '/webdav'
@@ -415,7 +419,7 @@ const config = {
 };
 
 const server = new ConfigServer();
-await server.start(8080, staticDir, handler, config, '0.0.0.0');
+await server.start(8080, handler, config, '0.0.0.0');
 ```
 
 #### `stop(): Promise<void>`
@@ -440,7 +444,7 @@ Creates and starts a static file server.
 
 Creates and starts an app server (hybrid mode).
 
-#### `createConfigServer(port: number, rootDir: string, handler: RequestHandler, config: ServerConfig, host?: string): Promise<ConfigServer>`
+#### `createConfigServer(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<ConfigServer>`
 
 Creates and starts a config server with plugin configuration.
 
@@ -472,11 +476,11 @@ interface HttpResponse {
 
 ```typescript
 interface ServerConfig {
+  root_dir?: string;             // Static file root directory (Optional)
   webdav?: WebDavConfig;
   zip_mount?: ZipMountConfig[];  // Support multiple Zip file mounts
   mime_types?: MimeTypesConfig;
-  dir_list?: DirListConfig;
-  default_index?: string[];
+  static_file?: StaticFileConfig;
 }
 
 interface WebDavConfig {
@@ -490,6 +494,12 @@ interface ZipMountConfig {
 }
 
 type MimeTypesConfig = Record<string, string>; // extension -> mime-type mapping
+
+interface StaticFileConfig {
+  enabled?: boolean;         // Enable static file serving (Default: true)
+  dir_list?: DirListConfig;
+  default_index?: string[];  // Default index files, e.g., ["index.html"]
+}
 
 interface DirListConfig {
   enabled: boolean;        // Enable directory listing
