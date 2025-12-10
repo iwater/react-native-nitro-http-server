@@ -139,27 +139,30 @@ const staticDir = RNFS.DocumentDirectoryPath + '/www';
 
 // 配置插件
 const config = {
-  root_dir: staticDir,           // 静态文件根目录（可选）
-  webdav: {
-    prefix: '/webdav',           // WebDAV 路径前缀
-    root: RNFS.DocumentDirectoryPath + '/webdav'
-  },
-  zip_mount: [                   // 支持多个 Zip 文件挂载
+  root_dir: staticDir,           // 静态文件根目录（可选，作为默认静态挂载点）
+  mounts: [
     {
-      mount_path: '/archive',    // Zip 挂载路径前缀
+      type: 'webdav',
+      path: '/webdav',
+      root: RNFS.DocumentDirectoryPath + '/webdav'
+    },
+    {
+      type: 'zip',
+      path: '/archive',
       zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
+    },
+    {
+      type: 'static',
+      path: '/static',
+      root: staticDir,
+      dir_list: {
+        enabled: true,           // 启用目录列表
+        show_hidden: false
+      }
     }
   ],
   mime_types: {
     "myext": "application/x-custom-type" // 自定义 MIME 类型
-  },
-  static_file: {
-    enabled: true,               // 启用静态文件服务
-    dir_list: {
-      enabled: true,               // 启用目录列表
-      show_hidden: false           // 显示隐藏文件（以 . 开头）
-    },
-    default_index: ["index.html", "index.htm"] // 默认索引文件
   }
 };
 
@@ -410,13 +413,15 @@ interface HttpResponse {
 ```typescript
 const config = {
   root_dir: staticDir,
-  webdav: {
-    prefix: '/webdav',
-    root: RNFS.DocumentDirectoryPath + '/webdav'
-  },
-  zip_mount: [
+  mounts: [
     {
-      mount_path: '/archive',
+      type: 'webdav',
+      path: '/webdav',
+      root: RNFS.DocumentDirectoryPath + '/webdav'
+    },
+    {
+      type: 'zip',
+      path: '/archive',
       zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
     }
   ]
@@ -480,35 +485,40 @@ interface HttpResponse {
 
 ```typescript
 interface ServerConfig {
-  root_dir?: string;             // 静态文件根目录（可选）
-  webdav?: WebDavConfig;
-  zip_mount?: ZipMountConfig[];  // 支持多个 Zip 文件挂载
+  root_dir?: string;             // 静态文件根目录（可选，作为默认静态挂载点）
   mime_types?: MimeTypesConfig;
-  static_file?: StaticFileConfig;
+  mounts?: Mountable[];          // 统一挂载列表
 }
 
-interface WebDavConfig {
-  prefix: string;    // 路径前缀，如 "/webdav"
-  root: string;   // WebDAV 根目录
+type Mountable = WebDavMount | ZipMount | StaticMount;
+
+interface WebDavMount {
+  type: 'webdav';
+  path: string;      // 挂载点，如 "/webdav"
+  root: string;      // WebDAV 根目录
 }
 
-interface ZipMountConfig {
-  mount_path: string;  // 路径前缀，如 "/zip"
-  zip_file: string;    // Zip 文件路径
+interface ZipMount {
+  type: 'zip';
+  path: string;      // 挂载点，如 "/zip"
+  zip_file: string;  // Zip 文件路径
+}
+
+interface StaticMount {
+  type: 'static';
+  path: string;      // 挂载点，如 "/images"
+  root: string;      // 本地文件系统目录
+  dir_list?: DirListConfig;
+  default_index?: string[];
 }
 
 type MimeTypesConfig = Record<string, string>; // 扩展名 -> mime-type 映射
-
-interface StaticFileConfig {
-  enabled?: boolean;         // 启用静态文件服务 (默认: true)
-  dir_list?: DirListConfig;
-  default_index?: string[];  // 默认索引文件，如 ["index.html"]
-}
 
 interface DirListConfig {
   enabled: boolean;        // 启用目录列表
   show_hidden?: boolean;   // 显示隐藏文件 (默认: false)
 }
+```
 
 ```
 
@@ -648,7 +658,7 @@ curl http://localhost:8080/api/test
 
 ## 📄 许可证
 
-MIT
+ISC
 
 ## 🤝 贡献
 

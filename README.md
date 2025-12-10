@@ -140,26 +140,29 @@ const staticDir = RNFS.DocumentDirectoryPath + '/www';
 // Configure plugins
 const config = {
   root_dir: staticDir,           // Static file root (Optional)
-  webdav: {
-    prefix: '/webdav',           // WebDAV path prefix
-    root: RNFS.DocumentDirectoryPath + '/webdav'
-  },
-  zip_mount: [                   // Support multiple Zip file mounts
+  mounts: [
     {
-      mount_path: '/archive',    // Zip mount path prefix
+      type: 'webdav',
+      path: '/webdav',
+      root: RNFS.DocumentDirectoryPath + '/webdav'
+    },
+    {
+      type: 'zip',
+      path: '/archive',
       zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
+    },
+    {
+      type: 'static',
+      path: '/static',
+      root: staticDir,
+      dir_list: {
+        enabled: true,           // Enable directory listing
+        show_hidden: false
+      }
     }
   ],
   mime_types: {
     "myext": "application/x-custom-type" // Custom MIME type
-  },
-  static_file: {
-    enabled: true,
-    dir_list: {
-      enabled: true,               // Enable directory listing
-      show_hidden: false           // Show hidden files (starting with .)
-    },
-    default_index: ["index.html", "index.htm"] // Default index files
   }
 };
 
@@ -406,13 +409,15 @@ Starts the config server with plugin configuration.
 ```typescript
 const config = {
   root_dir: staticDir,
-  webdav: {
-    prefix: '/webdav',
-    root: RNFS.DocumentDirectoryPath + '/webdav'
-  },
-  zip_mount: [
+  mounts: [
     {
-      mount_path: '/archive',
+      type: 'webdav',
+      path: '/webdav',
+      root: RNFS.DocumentDirectoryPath + '/webdav'
+    },
+    {
+      type: 'zip',
+      path: '/archive',
       zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
     }
   ]
@@ -476,30 +481,34 @@ interface HttpResponse {
 
 ```typescript
 interface ServerConfig {
-  root_dir?: string;             // Static file root directory (Optional)
-  webdav?: WebDavConfig;
-  zip_mount?: ZipMountConfig[];  // Support multiple Zip file mounts
+  root_dir?: string;             // Static file root (Optional, as default static mount)
   mime_types?: MimeTypesConfig;
-  static_file?: StaticFileConfig;
+  mounts?: Mountable[];          // Unified mount list
 }
 
-interface WebDavConfig {
-  prefix: string;    // Path prefix, e.g., "/webdav"
-  root: string;   // WebDAV root directory
+type Mountable = WebDavMount | ZipMount | StaticMount;
+
+interface WebDavMount {
+  type: 'webdav';
+  path: string;      // Mount path, e.g., "/webdav"
+  root: string;      // WebDAV root directory
 }
 
-interface ZipMountConfig {
-  mount_path: string;  // Path prefix, e.g., "/zip"
-  zip_file: string;    // Path to zip file
+interface ZipMount {
+  type: 'zip';
+  path: string;      // Mount path, e.g., "/zip"
+  zip_file: string;  // Zip file path
 }
 
-type MimeTypesConfig = Record<string, string>; // extension -> mime-type mapping
-
-interface StaticFileConfig {
-  enabled?: boolean;         // Enable static file serving (Default: true)
+interface StaticMount {
+  type: 'static';
+  path: string;      // Mount path, e.g., "/images"
+  root: string;      // Local file system directory
   dir_list?: DirListConfig;
-  default_index?: string[];  // Default index files, e.g., ["index.html"]
+  default_index?: string[];
 }
+
+type MimeTypesConfig = Record<string, string>;
 
 interface DirListConfig {
   enabled: boolean;        // Enable directory listing
@@ -641,7 +650,7 @@ curl http://localhost:8080/api/test
 
 ## 📄 License
 
-MIT
+ISC
 
 ## 🤝 Contribution
 

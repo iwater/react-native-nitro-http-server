@@ -1,9 +1,9 @@
 Pod::Spec.new do |s|
   s.name         = "RNHttpServer"
-  s.version      = "1.1.5"
+  s.version      = "1.3.0"
   s.summary      = "React Native HTTP Server Module"
   s.homepage     = "https://github.com/yourname/react-native-nitro-http-server"
-  s.license      = "MIT"
+  s.license      = "ISC"
   s.author       = { "Your Name" => "your.email@example.com" }
   
   s.platform     = :ios, "13.0"

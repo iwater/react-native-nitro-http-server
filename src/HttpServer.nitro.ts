@@ -28,38 +28,44 @@ export interface ServerStats {
     errorCount: number
 }
 
-// WebDAV 配置
-export interface WebDavConfig {
-    prefix: string    // 路径前缀，如 "/webdav"
-    root: string   // WebDAV 根目录
+// 基础挂载接口
+interface BaseMount {
+    path: string
 }
 
-// Zip 挂载配置
-export interface ZipMountConfig {
-    mount_path: string    // 路径前缀，如 "/zip"
-    zip_file: string   // Zip 文件路径
+// WebDAV 挂载
+export interface WebDavMount extends BaseMount {
+    type: 'webdav'
+    root: string
+}
+
+// Zip 挂载
+export interface ZipMount extends BaseMount {
+    type: 'zip'
+    zip_file: string
 }
 
 // 目录列表配置
 export interface DirListConfig {
-    enabled: boolean      // 是否启用目录列表
-    show_hidden?: boolean // 是否显示隐藏文件，默认 false
+    enabled: boolean
+    show_hidden?: boolean
 }
 
-// 静态文件服务配置
-export interface StaticFileConfig {
-    enabled?: boolean             // 是否启用静态文件服务，默认 true
-    dir_list?: DirListConfig      // 目录列表配置
-    default_index?: string[]      // 默认索引文件列表，如 ["index.html", "index.htm"]
+// 静态文件挂载
+export interface StaticMount extends BaseMount {
+    type: 'static'
+    root: string
+    dir_list?: DirListConfig
+    default_index?: string[]
 }
+
+export type Mountable = WebDavMount | ZipMount | StaticMount
 
 // 服务器插件配置
 export interface ServerConfig {
-    root_dir?: string                         // 静态文件根目录（可选）
-    webdav?: WebDavConfig
-    zip_mount?: ZipMountConfig[]              // 支持多个 Zip 文件挂载
-    mime_types?: Record<string, string>       // 自定义 MIME types 映射 (扩展名 -> MIME type)
-    static_file?: StaticFileConfig            // 静态文件服务配置
+    root_dir?: string                       // 静态文件根目录（可选，作为默认静态挂载点）
+    mime_types?: Record<string, string>     // 自定义 MIME types
+    mounts?: Mountable[]                    // 统一挂载列表
 }
 
 // 请求处理器类型
