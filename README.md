@@ -8,6 +8,7 @@ A high-performance React Native HTTP server library, implemented in Rust, suppor
 - 📱 **Cross-Platform**: Supports iOS and Android.
 - 🔄 **Asynchronous**: Uses Nitro Modules to provide native async APIs.
 - 📁 **Static File Serving**: Built-in static file server support.
+- 📂 **Directory Listing**: Automatically generate directory listing pages.
 - 🎯 **Easy to Use**: TypeScript-friendly API design.
 - ⚡ **Zero Copy**: Direct FFI calls to Rust code.
 - 🔌 **Plugin System**: Support for WebDAV, Zip mounting, and extensible plugins.
@@ -142,13 +143,20 @@ const config = {
     prefix: '/webdav',           // WebDAV path prefix
     root: RNFS.DocumentDirectoryPath + '/webdav'
   },
-  zip_mount: {
-    prefix: '/archive',          // Zip mount path prefix
-    zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
-  },
+  zip_mount: [                   // Support multiple Zip file mounts
+    {
+      mount_path: '/archive',    // Zip mount path prefix
+      zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
+    }
+  ],
   mime_types: {
     "myext": "application/x-custom-type" // Custom MIME type
-  }
+  },
+  dir_list: {
+    enabled: true,               // Enable directory listing
+    show_hidden: false           // Show hidden files (starting with .)
+  },
+  default_index: ["index.html", "index.htm"] // Default index files
 };
 
 // Start server with plugin configuration
@@ -163,6 +171,7 @@ const server = await createConfigServer(8080, staticDir, async (request) => {
 // Now you can:
 // - Access WebDAV at http://localhost:8080/webdav
 // - Access zip content at http://localhost:8080/archive
+// - Browse directories if index file is missing
 // - Static files from staticDir
 // - Dynamic API responses
 ```
@@ -397,10 +406,12 @@ const config = {
     prefix: '/webdav',
     root: RNFS.DocumentDirectoryPath + '/webdav'
   },
-  zip_mount: {
-    prefix: '/archive',
-    zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
-  }
+  zip_mount: [
+    {
+      mount_path: '/archive',
+      zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
+    }
+  ]
 };
 
 const server = new ConfigServer();
@@ -462,8 +473,10 @@ interface HttpResponse {
 ```typescript
 interface ServerConfig {
   webdav?: WebDavConfig;
-  zip_mount?: ZipMountConfig;
+  zip_mount?: ZipMountConfig[];  // Support multiple Zip file mounts
   mime_types?: MimeTypesConfig;
+  dir_list?: DirListConfig;
+  default_index?: string[];
 }
 
 interface WebDavConfig {
@@ -472,11 +485,16 @@ interface WebDavConfig {
 }
 
 interface ZipMountConfig {
-  prefix: string;    // Path prefix, e.g., "/zip"
-  zip_file: string;   // Path to zip file
+  mount_path: string;  // Path prefix, e.g., "/zip"
+  zip_file: string;    // Path to zip file
 }
 
 type MimeTypesConfig = Record<string, string>; // extension -> mime-type mapping
+
+interface DirListConfig {
+  enabled: boolean;        // Enable directory listing
+  show_hidden?: boolean;   // Show hidden files (default: false)
+}
 ```
 
 #### RequestHandler

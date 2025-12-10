@@ -8,6 +8,7 @@
 - 📱 **跨平台**: 支持 iOS 和 Android
 - 🔄 **异步处理**: 使用 Nitro Modules 提供原生异步 API
 - 📁 **静态文件服务**: 内置静态文件服务器支持
+- 📂 **目录列表**: 自动生成目录列表页面
 - 🎯 **简单易用**: TypeScript 友好的 API 设计
 - ⚡ **零拷贝**: 直接通过 FFI 调用 Rust 代码
 - 🔌 **插件系统**: 支持 WebDAV、Zip 挂载等可扩展插件
@@ -142,13 +143,20 @@ const config = {
     prefix: '/webdav',           // WebDAV 路径前缀
     root: RNFS.DocumentDirectoryPath + '/webdav'
   },
-  zip_mount: {
-    prefix: '/archive',          // Zip 挂载路径前缀
-    zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
-  },
+  zip_mount: [                   // 支持多个 Zip 文件挂载
+    {
+      mount_path: '/archive',    // Zip 挂载路径前缀
+      zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
+    }
+  ],
   mime_types: {
     "myext": "application/x-custom-type" // 自定义 MIME 类型
-  }
+  },
+  dir_list: {
+    enabled: true,               // 启用目录列表
+    show_hidden: false           // 显示隐藏文件（以 . 开头）
+  },
+  default_index: ["index.html", "index.htm"] // 默认索引文件
 };
 
 // 启动带插件配置的服务器
@@ -163,6 +171,7 @@ const server = await createConfigServer(8080, staticDir, async (request) => {
 // 现在可以：
 // - 通过 http://localhost:8080/webdav 访问 WebDAV
 // - 通过 http://localhost:8080/archive 访问 zip 文件内容
+// - 如果缺少索引文件，可以浏览目录
 // - 访问 staticDir 中的静态文件
 // - 获得动态 API 响应
 ```
@@ -401,10 +410,12 @@ const config = {
     prefix: '/webdav',
     root: RNFS.DocumentDirectoryPath + '/webdav'
   },
-  zip_mount: {
-    prefix: '/archive',
-    zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
-  }
+  zip_mount: [
+    {
+      mount_path: '/archive',
+      zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
+    }
+  ]
 };
 
 const server = new ConfigServer();
@@ -466,8 +477,10 @@ interface HttpResponse {
 ```typescript
 interface ServerConfig {
   webdav?: WebDavConfig;
-  zip_mount?: ZipMountConfig;
+  zip_mount?: ZipMountConfig[];  // 支持多个 Zip 文件挂载
   mime_types?: MimeTypesConfig;
+  dir_list?: DirListConfig;
+  default_index?: string[];
 }
 
 interface WebDavConfig {
@@ -476,11 +489,16 @@ interface WebDavConfig {
 }
 
 interface ZipMountConfig {
-  prefix: string;    // 路径前缀，如 "/zip"
-  zip_file: string;   // Zip 文件路径
+  mount_path: string;  // 路径前缀，如 "/zip"
+  zip_file: string;    // Zip 文件路径
 }
 
 type MimeTypesConfig = Record<string, string>; // 扩展名 -> mime-type 映射
+
+interface DirListConfig {
+  enabled: boolean;        // 启用目录列表
+  show_hidden?: boolean;   // 显示隐藏文件 (默认: false)
+}
 
 ```
 

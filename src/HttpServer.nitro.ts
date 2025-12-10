@@ -40,11 +40,19 @@ export interface ZipMountConfig {
     zip_file: string   // Zip 文件路径
 }
 
+// 目录列表配置
+export interface DirListConfig {
+    enabled: boolean      // 是否启用目录列表
+    show_hidden?: boolean // 是否显示隐藏文件，默认 false
+}
+
 // 服务器插件配置
 export interface ServerConfig {
     webdav?: WebDavConfig
-    zip_mount?: ZipMountConfig
+    zip_mount?: ZipMountConfig[]  // 支持多个 Zip 文件挂载
     mime_types?: Record<string, string>  // 自定义 MIME types 映射 (扩展名 -> MIME type)
+    dir_list?: DirListConfig              // 目录列表配置
+    default_index?: string[]              // 默认索引文件列表，如 ["index.html", "index.htm"]
 }
 
 // 请求处理器类型
