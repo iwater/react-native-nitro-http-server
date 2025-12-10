@@ -346,6 +346,34 @@ std::shared_ptr<Promise<void>> HybridHttpServer::stopAppServer() {
   });
 }
 
+std::shared_ptr<Promise<bool>> HybridHttpServer::startServerWithConfig(
+    double port, const std::string &rootDir,
+    const std::function<std::shared_ptr<Promise<
+        std::variant<HttpResponse, std::shared_ptr<Promise<HttpResponse>>>>>(
+        const HttpRequest &)> &handler,
+    const std::string &configJson, const std::optional<std::string> &host) {
+  return Promise<bool>::async([port, rootDir, handler, configJson,
+                               host]() -> bool {
+    // Create or update global context
+    {
+      std::lock_guard<std::mutex> lock(g_contextMutex);
+      if (!g_serverContext) {
+        g_serverContext = new ServerContext();
+      }
+      g_serverContext->handler = handler;
+    }
+
+    // Start server with config
+    int portInt = static_cast<int>(port);
+    const char *hostCStr = host.has_value() ? host.value().c_str() : nullptr;
+    bool success =
+        start_server_with_config(portInt, hostCStr, rootDir.c_str(),
+                                 c_request_callback, configJson.c_str());
+
+    return success;
+  });
+}
+
 void HybridHttpServer::sendHttpResponse(const std::string &requestId,
                                         const HttpResponse &response) {
   extractAndSendResponse(requestId, response);

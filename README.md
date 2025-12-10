@@ -10,6 +10,9 @@ A high-performance React Native HTTP server library, implemented in Rust, suppor
 - 📁 **Static File Serving**: Built-in static file server support.
 - 🎯 **Easy to Use**: TypeScript-friendly API design.
 - ⚡ **Zero Copy**: Direct FFI calls to Rust code.
+- 🔌 **Plugin System**: Support for WebDAV, Zip mounting, and extensible plugins.
+- 🌊 **Streaming APIs**: Support for streaming request/response bodies.
+- 🔄 **Node.js Compatible**: Compatible with Node.js `http` module API.
 
 ## 📦 Installation
 
@@ -36,9 +39,9 @@ No extra configuration needed, autolinking is supported.
 ### Basic HTTP Server
 
 ```typescript
-import ReactNativeHttpServer from 'react-native-nitro-http-server';
+import { HttpServer } from 'react-native-nitro-http-server';
 
-const server = new ReactNativeHttpServer();
+const server = new HttpServer();
 
 // Start server
 await server.start(8080, async (request) => {
@@ -65,9 +68,9 @@ console.log('Server running at http://localhost:8080');
 ### Binary Response Example
 
 ```typescript
-import ReactNativeHttpServer from 'react-native-nitro-http-server';
+import { HttpServer } from 'react-native-nitro-http-server';
 
-const server = new ReactNativeHttpServer();
+const server = new HttpServer();
 
 await server.start(8080, async (request) => {
   // Return a binary image
@@ -86,20 +89,20 @@ await server.start(8080, async (request) => {
 ### Static File Server
 
 ```typescript
-import ReactNativeHttpServer from 'react-native-nitro-http-server';
+import { StaticServer } from 'react-native-nitro-http-server';
 import RNFS from 'react-native-fs';
 
-const server = new ReactNativeHttpServer();
+const server = new StaticServer();
 
 // Start static file server
 const staticDir = RNFS.DocumentDirectoryPath + '/www';
-await server.startStaticServer(8080, staticDir);
+await server.start(8080, staticDir);
 
 console.log(`Static file server running at http://localhost:8080`);
 console.log(`Serving directory: ${staticDir}`);
 
 // Stop static server
-// await server.stopStaticServer();
+// await server.stop();
 ```
 
 ### App Server (Hybrid Mode)
@@ -107,14 +110,14 @@ console.log(`Serving directory: ${staticDir}`);
 Supports both static file serving and dynamic API handling. It prioritizes serving static files; if the file does not exist, it invokes the callback function.
 
 ```typescript
-import ReactNativeHttpServer from 'react-native-nitro-http-server';
+import { AppServer } from 'react-native-nitro-http-server';
 import RNFS from 'react-native-fs';
 
-const server = new ReactNativeHttpServer();
+const server = new AppServer();
 const staticDir = RNFS.DocumentDirectoryPath + '/www';
 
 // Start app server (hybrid mode)
-await server.startAppServer(8080, staticDir, async (request) => {
+await server.start(8080, staticDir, async (request) => {
   // This callback is executed when the static file is not found
   return {
     statusCode: 200,
@@ -123,12 +126,53 @@ await server.startAppServer(8080, staticDir, async (request) => {
 });
 ```
 
+### Config Server (With Plugins)
+
+Supports advanced features like WebDAV and Zip file mounting through plugin configuration.
+
+```typescript
+import { createConfigServer } from 'react-native-nitro-http-server';
+import RNFS from 'react-native-fs';
+
+const staticDir = RNFS.DocumentDirectoryPath + '/www';
+
+// Configure plugins
+const config = {
+  webdav: {
+    prefix: '/webdav',           // WebDAV path prefix
+    root: RNFS.DocumentDirectoryPath + '/webdav'
+  },
+  zip_mount: {
+    prefix: '/archive',          // Zip mount path prefix
+    zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
+  },
+  mime_types: {
+    "myext": "application/x-custom-type" // Custom MIME type
+  }
+};
+
+// Start server with plugin configuration
+const server = await createConfigServer(8080, staticDir, async (request) => {
+  // Handle dynamic requests
+  return {
+    statusCode: 200,
+    body: `API response for ${request.path}`,
+  };
+}, config);
+
+// Now you can:
+// - Access WebDAV at http://localhost:8080/webdav
+// - Access zip content at http://localhost:8080/archive
+// - Static files from staticDir
+// - Dynamic API responses
+```
+
 ### RESTful API Example
 
 ```typescript
-import ReactNativeHttpServer from 'react-native-nitro-http-server';
+import { HttpServer } from 'react-native-nitro-http-server';
 
-const server = new ReactNativeHttpServer();
+const server = new HttpServer();
 
 // Mock database
 const users = [
@@ -211,9 +255,9 @@ server.listen(8080, () => {
 
 ## 📖 API Documentation
 
-### ReactNativeHttpServer
+### HttpServer
 
-The main server class.
+The basic HTTP server class for handling dynamic requests.
 
 #### `start(port: number, handler: RequestHandler): Promise<boolean>`
 
@@ -244,51 +288,46 @@ Stops the HTTP server.
 await server.stop();
 ```
 
-#### `startStaticServer(port: number, rootDir: string): Promise<boolean>`
+### StaticServer
+
+The static file server class.
+
+#### `start(port: number, rootDir: string, host?: string): Promise<boolean>`
 
 Starts the static file server.
 
 **Parameters**:
 - `port`: Port number
 - `rootDir`: Absolute path to the static file root directory
+- `host`: (Optional) IP address to bind to, defaults to `127.0.0.1`
 
 **Returns**: `true` if started successfully.
 
 **Example**:
 ```typescript
+import { StaticServer } from 'react-native-nitro-http-server';
 import RNFS from 'react-native-fs';
 
-const success = await server.startStaticServer(
+const server = new StaticServer();
+const success = await server.start(
   8080,
   RNFS.DocumentDirectoryPath + '/www'
 );
 ```
 
-#### `stopStaticServer(): Promise<void>`
+#### `stop(): Promise<void>`
 
 Stops the static file server.
 
-#### `getStats(): Promise<ServerStats>`
-
-Gets server statistics.
-
-**Returns**: An object containing the following fields:
-- `totalRequests`: Total request count
-- `activeConnections`: Active active connections
-- `bytesSent`: Bytes sent
-- `bytesReceived`: Bytes received
-- `uptime`: Uptime in seconds
-- `errorCount`: Error count
-
-#### `isServerRunning(): boolean`
-
-Checks if the dynamic server is running.
-
-#### `isStaticRunning(): boolean`
+#### `isRunning(): boolean`
 
 Checks if the static server is running.
 
-#### `startAppServer(port: number, rootDir: string, handler: RequestHandler): Promise<boolean>`
+### AppServer
+
+The app server class (hybrid mode) for both static files and dynamic requests.
+
+#### `start(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<boolean>`
 
 Starts the app server (hybrid mode). The server will first attempt to find the corresponding static file in `rootDir`. If found and the method is GET, it returns the file content directly. Otherwise, it forwards the request to the `handler`.
 
@@ -296,14 +335,17 @@ Starts the app server (hybrid mode). The server will first attempt to find the c
 - `port`: Port number
 - `rootDir`: Static file root directory
 - `handler`: Request handler
+- `host`: (Optional) IP address to bind to, defaults to `127.0.0.1`
 
-#### `stopAppServer(): Promise<void>`
+#### `stop(): Promise<void>`
 
 Stops the app server.
 
-#### `static createStaticServer(port: number, staticDir: string): Promise<ReactNativeHttpServer>`
+#### `isRunning(): boolean`
 
-Static convenience method to create and start a static file server instance.
+Checks if the app server is running.
+
+
 
 ### Type Definitions
 
@@ -329,6 +371,114 @@ interface HttpResponse {
 }
 ```
 
+#### `stopAppServer(): Promise<void>`
+
+Stops the app server.
+
+### ConfigServer
+
+Server with plugin configuration support (WebDAV, Zip mounting, etc.).
+
+#### `start(port: number, rootDir: string, handler: RequestHandler, config: ServerConfig, host?: string): Promise<boolean>`
+
+Starts the config server with plugin configuration.
+
+**Parameters**:
+- `port`: Port number
+- `rootDir`: Static files root directory
+- `handler`: Request handler
+- `config`: Plugin configuration object
+- `host`: (Optional) IP address to bind to, defaults to `127.0.0.1`
+
+**Example**:
+```typescript
+const config = {
+  webdav: {
+    prefix: '/webdav',
+    root: RNFS.DocumentDirectoryPath + '/webdav'
+  },
+  zip_mount: {
+    prefix: '/archive',
+    zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
+  }
+};
+
+const server = new ConfigServer();
+await server.start(8080, staticDir, handler, config, '0.0.0.0');
+```
+
+#### `stop(): Promise<void>`
+
+Stops the config server.
+
+#### `isRunning(): boolean`
+
+Checks if the config server is running.
+
+### Helper Functions
+
+#### `createHttpServer(port: number, handler: RequestHandler, host?: string): Promise<HttpServer>`
+
+Creates and starts a basic HTTP server.
+
+#### `createStaticServer(port: number, rootDir: string, host?: string): Promise<StaticServer>`
+
+Creates and starts a static file server.
+
+#### `createAppServer(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<AppServer>`
+
+Creates and starts an app server (hybrid mode).
+
+#### `createConfigServer(port: number, rootDir: string, handler: RequestHandler, config: ServerConfig, host?: string): Promise<ConfigServer>`
+
+Creates and starts a config server with plugin configuration.
+
+### Type Definitions
+
+#### HttpRequest
+
+```typescript
+interface HttpRequest {
+  requestId: string;      // Unique request ID
+  method: string;         // HTTP Method (GET, POST, PUT, DELETE, etc.)
+  path: string;           // Request path
+  headers: Record<string, string>;  // Request headers
+  body?: string;          // Request body (optional)
+}
+```
+
+#### HttpResponse
+
+```typescript
+interface HttpResponse {
+  statusCode: number;     // HTTP Status Code (200, 404, 500, etc.)
+  headers?: Record<string, string>;  // Response headers (optional)
+  body?: string | ArrayBuffer;       // Response body (string or ArrayBuffer)
+}
+```
+
+#### ServerConfig
+
+```typescript
+interface ServerConfig {
+  webdav?: WebDavConfig;
+  zip_mount?: ZipMountConfig;
+  mime_types?: MimeTypesConfig;
+}
+
+interface WebDavConfig {
+  prefix: string;    // Path prefix, e.g., "/webdav"
+  root: string;   // WebDAV root directory
+}
+
+interface ZipMountConfig {
+  prefix: string;    // Path prefix, e.g., "/zip"
+  zip_file: string;   // Path to zip file
+}
+
+type MimeTypesConfig = Record<string, string>; // extension -> mime-type mapping
+```
+
 #### RequestHandler
 
 ```typescript
@@ -348,7 +498,16 @@ Exports the following objects and functions compatible with Node.js `http` modul
 - `STATUS_CODES`
 - `METHODS`
 
-Note: Due to React Native environment limitations, streaming APIs may currently be implemented via full data buffering.
+#### Streaming APIs
+
+The library also provides low-level streaming APIs for advanced use cases:
+
+- `readRequestBodyChunk(requestId: string): Promise<string>` - Read request body in chunks
+- `writeResponseChunk(requestId: string, chunk: string): Promise<boolean>` - Write response body in chunks
+- `endResponse(requestId: string, statusCode: number, headersJson: string): Promise<boolean>` - End streaming response
+- `sendBinaryResponse(requestId: string, statusCode: number, headersJson: string, body: ArrayBuffer): Promise<boolean>` - Send binary response
+
+These APIs are used internally by the Node.js compatible layer for streaming support.
 
 ## 🏗️ Architecture
 

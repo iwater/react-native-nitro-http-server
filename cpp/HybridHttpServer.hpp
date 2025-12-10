@@ -45,6 +45,15 @@ public:
 
   std::shared_ptr<Promise<void>> stopAppServer() override;
 
+  // 带配置的 App server 方法
+  std::shared_ptr<Promise<bool>> startServerWithConfig(
+      double port, const std::string &rootDir,
+      const std::function<std::shared_ptr<Promise<
+          std::variant<HttpResponse, std::shared_ptr<Promise<HttpResponse>>>>>(
+          const HttpRequest &)> &handler,
+      const std::string &configJson,
+      const std::optional<std::string> &host) override;
+
   // 流式接口
   std::shared_ptr<Promise<std::string>>
   readRequestBodyChunk(const std::string &requestId) override;

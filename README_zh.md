@@ -10,6 +10,9 @@
 - 📁 **静态文件服务**: 内置静态文件服务器支持
 - 🎯 **简单易用**: TypeScript 友好的 API 设计
 - ⚡ **零拷贝**: 直接通过 FFI 调用 Rust 代码
+- 🔌 **插件系统**: 支持 WebDAV、Zip 挂载等可扩展插件
+- 🌊 **流式 API**: 支持流式请求/响应体处理
+- 🔄 **Node.js 兼容**: 兼容 Node.js `http` 模块 API
 
 ## 📦 安装
 
@@ -36,9 +39,9 @@ cd ios && pod install
 ### 基础 HTTP 服务器
 
 ```typescript
-import ReactNativeHttpServer from 'react-native-nitro-http-server';
+import { HttpServer } from 'react-native-nitro-http-server';
 
-const server = new ReactNativeHttpServer();
+const server = new HttpServer();
 
 // 启动服务器
 await server.start(8080, async (request) => {
@@ -65,9 +68,9 @@ console.log('服务器运行在 http://localhost:8080');
 ### 二进制响应示例
 
 ```typescript
-import ReactNativeHttpServer from 'react-native-nitro-http-server';
+import { HttpServer } from 'react-native-nitro-http-server';
 
-const server = new ReactNativeHttpServer();
+const server = new HttpServer();
 
 await server.start(8080, async (request) => {
   // 返回二进制图片
@@ -86,20 +89,20 @@ await server.start(8080, async (request) => {
 ### 静态文件服务器
 
 ```typescript
-import ReactNativeHttpServer from 'react-native-nitro-http-server';
+import { StaticServer } from 'react-native-nitro-http-server';
 import RNFS from 'react-native-fs';
 
-const server = new ReactNativeHttpServer();
+const server = new StaticServer();
 
 // 启动静态文件服务器
 const staticDir = RNFS.DocumentDirectoryPath + '/www';
-await server.startStaticServer(8080, staticDir);
+await server.start(8080, staticDir);
 
 console.log(`静态文件服务器运行在 http://localhost:8080`);
 console.log(`服务目录: ${staticDir}`);
 
 // 停止静态服务器
-// await server.stopStaticServer();
+// await server.stop();
 ```
 
 ### 应用服务器 (混合模式)
@@ -107,14 +110,14 @@ console.log(`服务目录: ${staticDir}`);
 同时支持静态文件服务和动态 API 处理。优先尝试服务静态文件，如果文件不存在则调用回调函数。
 
 ```typescript
-import ReactNativeHttpServer from 'react-native-nitro-http-server';
+import { AppServer } from 'react-native-nitro-http-server';
 import RNFS from 'react-native-fs';
 
-const server = new ReactNativeHttpServer();
+const server = new AppServer();
 const staticDir = RNFS.DocumentDirectoryPath + '/www';
 
 // 启动应用服务器（混合模式）
-await server.startAppServer(8080, staticDir, async (request) => {
+await server.start(8080, staticDir, async (request) => {
   // 静态文件不存在时会执行此回调
   return {
     statusCode: 200,
@@ -123,12 +126,53 @@ await server.startAppServer(8080, staticDir, async (request) => {
 });
 ```
 
+### 配置服务器 (带插件)
+
+通过插件配置支持 WebDAV、Zip 文件挂载等高级功能。
+
+```typescript
+import { createConfigServer } from 'react-native-nitro-http-server';
+import RNFS from 'react-native-fs';
+
+const staticDir = RNFS.DocumentDirectoryPath + '/www';
+
+// 配置插件
+const config = {
+  webdav: {
+    prefix: '/webdav',           // WebDAV 路径前缀
+    root: RNFS.DocumentDirectoryPath + '/webdav'
+  },
+  zip_mount: {
+    prefix: '/archive',          // Zip 挂载路径前缀
+    zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
+  },
+  mime_types: {
+    "myext": "application/x-custom-type" // 自定义 MIME 类型
+  }
+};
+
+// 启动带插件配置的服务器
+const server = await createConfigServer(8080, staticDir, async (request) => {
+  // 处理动态请求
+  return {
+    statusCode: 200,
+    body: `API 响应: ${request.path}`,
+  };
+}, config);
+
+// 现在可以：
+// - 通过 http://localhost:8080/webdav 访问 WebDAV
+// - 通过 http://localhost:8080/archive 访问 zip 文件内容
+// - 访问 staticDir 中的静态文件
+// - 获得动态 API 响应
+```
+
 ### RESTful API 示例
 
 ```typescript
-import ReactNativeHttpServer from 'react-native-nitro-http-server';
+import { HttpServer } from 'react-native-nitro-http-server';
 
-const server = new ReactNativeHttpServer();
+const server = new HttpServer();
 
 // 模拟数据库
 const users = [
@@ -187,8 +231,6 @@ await server.start(8080, async (request) => {
     body: JSON.stringify({ error: 'Route not found' }),
   };
 });
-  };
-});
 ```
 
 ### Node.js 兼容 API
@@ -213,9 +255,9 @@ server.listen(8080, () => {
 
 ## 📖 API 文档
 
-### ReactNativeHttpServer
+### HttpServer
 
-主要的服务器类。
+基础 HTTP 服务器类，用于处理动态请求。
 
 #### `start(port: number, handler: RequestHandler, host?: string): Promise<boolean>`
 
@@ -251,7 +293,11 @@ await server.start(8080, handler, '0.0.0.0');
 await server.stop();
 ```
 
-#### `startStaticServer(port: number, rootDir: string, host?: string): Promise<boolean>`
+### StaticServer
+
+静态文件服务器类。
+
+#### `start(port: number, rootDir: string, host?: string): Promise<boolean>`
 
 启动静态文件服务器。
 
@@ -264,40 +310,30 @@ await server.stop();
 
 **示例**:
 ```typescript
+import { StaticServer } from 'react-native-nitro-http-server';
 import RNFS from 'react-native-fs';
 
-const success = await server.startStaticServer(
+const server = new StaticServer();
+const success = await server.start(
   8080,
   RNFS.DocumentDirectoryPath + '/www',
   '0.0.0.0' // 允许外部访问
 );
 ```
 
-#### `stopStaticServer(): Promise<void>`
+#### `stop(): Promise<void>`
 
 停止静态文件服务器。
 
-#### `getStats(): Promise<ServerStats>`
+#### `isRunning(): boolean`
 
-获取服务器统计信息。
+检查静态服务器是否正在运行.
 
-**返回**: 包含以下字段的对象：
-- `totalRequests`: 总请求数
-- `activeConnections`: 活动连接数
-- `bytesSent`: 发送的字节数
-- `bytesReceived`: 接收的字节数
-- `uptime`: 运行时间（秒）
-- `errorCount`: 错误计数
+### AppServer
 
-#### `isServerRunning(): boolean`
+应用服务器类（混合模式），同时支持静态文件和动态请求。
 
-检查动态服务器是否正在运行。
-
-#### `isStaticRunning(): boolean`
-
-检查静态服务器是否正在运行。
-
-#### `startAppServer(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<boolean>`
+#### `start(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<boolean>`
 
 启动应用服务器（混合模式）。服务器会首先尝试在 `rootDir` 中查找对应的静态文件。如果找到且方法为 GET,则直接返回文件内容。否则,将请求转发给 `handler` 处理。
 
@@ -307,13 +343,13 @@ const success = await server.startStaticServer(
 - `handler`: 请求处理器
 - `host`: (可选) 监听的IP地址,默认为 `127.0.0.1`
 
-#### `stopAppServer(): Promise<void>`
+#### `stop(): Promise<void>`
 
-停止应用服务器。
+停止应用服务器.
 
-#### `static createStaticServer(port: number, staticDir: string): Promise<ReactNativeHttpServer>`
+#### `isRunning(): boolean`
 
-静态便捷方法，创建并启动一个静态文件服务器实例。
+检查应用服务器是否正在运行。
 
 ### 类型定义
 
@@ -339,6 +375,115 @@ interface HttpResponse {
 }
 ```
 
+#### `stopAppServer(): Promise<void>`
+
+停止应用服务器。
+
+### ConfigServer
+
+带插件配置支持的服务器类（WebDAV、Zip 挂载等）。
+
+#### `start(port: number, rootDir: string, handler: RequestHandler, config: ServerConfig, host?: string): Promise<boolean>`
+
+启动带插件配置的服务器。
+
+**参数**:
+- `port`: 端口号
+- `rootDir`: 静态文件根目录
+- `handler`: 请求处理器
+- `config`: 插件配置对象
+- `host`: (可选) 监听的IP地址，默认为 `127.0.0.1`
+
+**示例**:
+```typescript
+const config = {
+  webdav: {
+    prefix: '/webdav',
+    root: RNFS.DocumentDirectoryPath + '/webdav'
+  },
+  zip_mount: {
+    prefix: '/archive',
+    zip_file: RNFS.DocumentDirectoryPath + '/content.zip'
+  }
+};
+
+const server = new ConfigServer();
+await server.start(8080, staticDir, handler, config, '0.0.0.0');
+```
+
+#### `stop(): Promise<void>`
+
+停止配置服务器。
+
+#### `isRunning(): boolean`
+
+检查配置服务器是否正在运行。
+
+### 帮助函数
+
+#### `createHttpServer(port: number, handler: RequestHandler, host?: string): Promise<HttpServer>`
+
+创建并启动基础 HTTP 服务器。
+
+#### `createStaticServer(port: number, rootDir: string, host?: string): Promise<StaticServer>`
+
+创建并启动静态文件服务器。
+
+#### `createAppServer(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<AppServer>`
+
+创建并启动应用服务器（混合模式）。
+
+#### `createConfigServer(port: number, rootDir: string, handler: RequestHandler, config: ServerConfig, host?: string): Promise<ConfigServer>`
+
+创建并启动带插件配置的服务器。
+
+### 类型定义
+
+#### HttpRequest
+
+```typescript
+interface HttpRequest {
+  requestId: string;      // 请求唯一ID
+  method: string;         // HTTP 方法 (GET, POST, PUT, DELETE, etc.)
+  path: string;           // 请求路径
+  headers: Record<string, string>;  // 请求头
+  body?: string;          // 请求体（可选）
+}
+```
+
+#### HttpResponse
+
+```typescript
+interface HttpResponse {
+  statusCode: number;     // HTTP 状态码 (200, 404, 500, etc.)
+  headers?: Record<string, string>;  // 响应头（可选）
+  body?: string | ArrayBuffer;       // 响应体（支持 string 或 ArrayBuffer）
+}
+```
+
+#### ServerConfig
+
+```typescript
+interface ServerConfig {
+  webdav?: WebDavConfig;
+  zip_mount?: ZipMountConfig;
+  mime_types?: MimeTypesConfig;
+}
+
+interface WebDavConfig {
+  prefix: string;    // 路径前缀，如 "/webdav"
+  root: string;   // WebDAV 根目录
+}
+
+interface ZipMountConfig {
+  prefix: string;    // 路径前缀，如 "/zip"
+  zip_file: string;   // Zip 文件路径
+}
+
+type MimeTypesConfig = Record<string, string>; // 扩展名 -> mime-type 映射
+
+```
+
 #### RequestHandler
 
 ```typescript
@@ -358,7 +503,16 @@ type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResp
 - `STATUS_CODES`
 - `METHODS`
 
-注意：由于 React Native 环境限制，流式 API 目前可能以全量数据缓冲形式实现。
+#### 流式 API
+
+本库还提供了底层的流式 API 用于高级场景：
+
+- `readRequestBodyChunk(requestId: string): Promise<string>` - 分块读取请求体
+- `writeResponseChunk(requestId: string, chunk: string): Promise<boolean>` - 分块写入响应体
+- `endResponse(requestId: string, statusCode: number, headersJson: string): Promise<boolean>` - 结束流式响应
+- `sendBinaryResponse(requestId: string, statusCode: number, headersJson: string, body: ArrayBuffer): Promise<boolean>` - 发送二进制响应
+
+这些 API 在内部被 Node.js 兼容层用于实现流式支持。
 
 ## 🏗️ 架构
 

@@ -85,6 +85,16 @@ bool start_app_server(int port, const char* host, const char* root_dir, RequestC
 /// 停止App HTTP服务器
 void stop_app_server(void);
 
+/// 启动App HTTP服务器（带配置）
+/// 
+/// @param port 服务器端口号
+/// @param host 监听的IP地址
+/// @param root_dir 静态文件根目录路径
+/// @param callback 请求回调函数
+/// @param config_json 插件配置JSON字符串
+/// @return 如果服务器启动成功返回true，否则返回false
+bool start_server_with_config(int port, const char* host, const char* root_dir, RequestCallback callback, const char* config_json);
+
 /// 分块读取请求body
 /// 
 /// 从指定请求的body中读取数据到缓冲区

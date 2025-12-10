@@ -28,6 +28,25 @@ export interface ServerStats {
     errorCount: number
 }
 
+// WebDAV 配置
+export interface WebDavConfig {
+    prefix: string    // 路径前缀，如 "/webdav"
+    root: string   // WebDAV 根目录
+}
+
+// Zip 挂载配置
+export interface ZipMountConfig {
+    mount_path: string    // 路径前缀，如 "/zip"
+    zip_file: string   // Zip 文件路径
+}
+
+// 服务器插件配置
+export interface ServerConfig {
+    webdav?: WebDavConfig
+    zip_mount?: ZipMountConfig
+    mime_types?: Record<string, string>  // 自定义 MIME types 映射 (扩展名 -> MIME type)
+}
+
 // 请求处理器类型
 export type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResponse
 
@@ -133,4 +152,15 @@ export interface HttpServer extends HybridObject<{
      * 停止App HTTP服务器
      */
     stopAppServer(): Promise<void>
+
+    /**
+     * 启动带配置的App HTTP服务器（支持插件如 WebDAV、Zip 挂载）
+     * @param port 端口号
+     * @param rootDir 静态文件根目录路径
+     * @param handler 请求处理器
+     * @param configJson 插件配置 JSON 字符串
+     * @param host 监听的IP地址,默认为 127.0.0.1
+     * @returns 是否启动成功
+     */
+    startServerWithConfig(port: number, rootDir: string, handler: RequestHandler, configJson: string, host?: string): Promise<boolean>
 }
