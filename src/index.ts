@@ -214,7 +214,7 @@ export async function createConfigServer(port: number, handler: RequestHandler, 
 }
 
 // 导出类型和实例
-export type { HttpRequest, ServerConfig, DirListConfig, StaticFileConfig } from './HttpServer.nitro'
+export type { HttpRequest, ServerConfig, DirListConfig, Mountable, WebDavMount, ZipMount, StaticMount } from './HttpServer.nitro'
 export { HttpServerModule }
 
 // Node.js 兼容的 HTTP 接口
