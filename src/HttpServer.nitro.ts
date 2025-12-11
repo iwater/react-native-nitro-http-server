@@ -59,7 +59,13 @@ export interface StaticMount extends BaseMount {
     default_index?: string[]
 }
 
-export type Mountable = WebDavMount | ZipMount | StaticMount
+// 上传插件挂载
+export interface UploadMount extends BaseMount {
+    type: 'upload'
+    temp_dir: string
+}
+
+export type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount
 
 // 服务器插件配置
 export interface ServerConfig {

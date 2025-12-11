@@ -13,6 +13,7 @@ A high-performance React Native HTTP server library, implemented in Rust, suppor
 - ⚡ **Zero Copy**: Direct FFI calls to Rust code.
 - 🔌 **Plugin System**: Support for WebDAV, Zip mounting, and extensible plugins.
 - 🌊 **Streaming APIs**: Support for streaming request/response bodies.
+- 📤 **File Upload Plugin**: Support for handling `multipart/form-data` file uploads efficiently.
 - 🔄 **Node.js Compatible**: Compatible with Node.js `http` module API.
 
 ## 📦 Installation
@@ -159,6 +160,11 @@ const config = {
         enabled: true,           // Enable directory listing
         show_hidden: false
       }
+    },
+    {
+      type: 'upload',
+      path: '/upload',
+      temp_dir: RNFS.CachesDirectoryPath + '/uploads'
     }
   ],
   mime_types: {
@@ -486,7 +492,7 @@ interface ServerConfig {
   mounts?: Mountable[];          // Unified mount list
 }
 
-type Mountable = WebDavMount | ZipMount | StaticMount;
+type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount;
 
 interface WebDavMount {
   type: 'webdav';
@@ -498,6 +504,12 @@ interface ZipMount {
   type: 'zip';
   path: string;      // Mount path, e.g., "/zip"
   zip_file: string;  // Zip file path
+}
+
+interface UploadMount {
+  type: 'upload';
+  path: string;      // Mount path, e.g., "/upload"
+  temp_dir: string;  // Temporary directory for uploaded files
 }
 
 interface StaticMount {
@@ -591,8 +603,9 @@ These APIs are used internally by the Node.js compatible layer for streaming sup
 ### Q: How to handle large file uploads?
 
 **A**: The `body` field in the current version is a string type, which is not suitable for large files. Suggestions:
-- Use the static file server.
-- Add streaming support in the Rust layer.
+- **Use the `UploadPlugin` (Recommended)**: Configure an `upload` mount. It intercepts multipart uploads, saves files to a temporary directory, and injects file paths into request headers (`x-uploaded-file-path`), keeping the JS payload light.
+- Use the static file server (for downloads).
+- Add streaming support in the Rust layer (advanced).
 
 ### Q: Is HTTPS supported?
 

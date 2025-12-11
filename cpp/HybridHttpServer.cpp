@@ -125,10 +125,104 @@ static void c_request_callback(::HttpRequest *cRequest) {
       request.path = std::string(cRequest->path);
     }
 
-    // 解析 headers JSON（简化实现）
+    // Parse headers JSON
     request.headers = std::unordered_map<std::string, std::string>();
+    if (cRequest->headers_json && strlen(cRequest->headers_json) > 0) {
+      std::string jsonStr(cRequest->headers_json);
 
-    // 设置 body
+      // Simple JSON parser for headers (assumes well-formed JSON object)
+      // Format: {"key1":"value1","key2":"value2"}
+      if (jsonStr.length() >= 2 && jsonStr[0] == '{' &&
+          jsonStr[jsonStr.length() - 1] == '}') {
+        size_t pos = 1; // Skip opening '{'
+
+        while (pos < jsonStr.length() - 1) {
+          // Skip whitespace
+          while (pos < jsonStr.length() && std::isspace(jsonStr[pos]))
+            pos++;
+
+          if (pos >= jsonStr.length() - 1 || jsonStr[pos] == '}')
+            break;
+
+          // Parse key
+          if (jsonStr[pos] != '"')
+            break; // Expect quoted key
+          pos++;   // Skip opening quote
+
+          size_t keyStart = pos;
+          while (pos < jsonStr.length() && jsonStr[pos] != '"') {
+            if (jsonStr[pos] == '\\' && pos + 1 < jsonStr.length()) {
+              pos += 2; // Skip escaped character
+            } else {
+              pos++;
+            }
+          }
+
+          if (pos >= jsonStr.length())
+            break;
+          std::string key = jsonStr.substr(keyStart, pos - keyStart);
+          pos++; // Skip closing quote
+
+          // Skip whitespace and colon
+          while (pos < jsonStr.length() &&
+                 (std::isspace(jsonStr[pos]) || jsonStr[pos] == ':'))
+            pos++;
+
+          // Parse value
+          if (pos >= jsonStr.length() || jsonStr[pos] != '"')
+            break; // Expect quoted value
+          pos++;   // Skip opening quote
+
+          size_t valueStart = pos;
+          while (pos < jsonStr.length() && jsonStr[pos] != '"') {
+            if (jsonStr[pos] == '\\' && pos + 1 < jsonStr.length()) {
+              pos += 2; // Skip escaped character
+            } else {
+              pos++;
+            }
+          }
+
+          if (pos >= jsonStr.length())
+            break;
+          std::string value = jsonStr.substr(valueStart, pos - valueStart);
+          pos++; // Skip closing quote
+
+          // Unescape common JSON escape sequences
+          auto unescape = [](const std::string &str) -> std::string {
+            std::string result;
+            for (size_t i = 0; i < str.length(); i++) {
+              if (str[i] == '\\' && i + 1 < str.length()) {
+                char next = str[i + 1];
+                if (next == '"' || next == '\\' || next == '/') {
+                  result += next;
+                  i++;
+                } else if (next == 'n') {
+                  result += '\n';
+                  i++;
+                } else if (next == 't') {
+                  result += '\t';
+                  i++;
+                } else {
+                  result += str[i];
+                }
+              } else {
+                result += str[i];
+              }
+            }
+            return result;
+          };
+
+          request.headers[unescape(key)] = unescape(value);
+
+          // Skip whitespace and comma
+          while (pos < jsonStr.length() &&
+                 (std::isspace(jsonStr[pos]) || jsonStr[pos] == ','))
+            pos++;
+        }
+      }
+    }
+
+    // Set body
     if (cRequest->body && cRequest->body_len > 0) {
       request.body = std::string(cRequest->body, cRequest->body_len);
     }

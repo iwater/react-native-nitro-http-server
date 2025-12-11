@@ -13,6 +13,7 @@
 - ⚡ **零拷贝**: 直接通过 FFI 调用 Rust 代码
 - 🔌 **插件系统**: 支持 WebDAV、Zip 挂载等可扩展插件
 - 🌊 **流式 API**: 支持流式请求/响应体处理
+- 📤 **文件上传插件**: 支持高效处理 `multipart/form-data` 文件上传
 - 🔄 **Node.js 兼容**: 兼容 Node.js `http` 模块 API
 
 ## 📦 安装
@@ -159,6 +160,11 @@ const config = {
         enabled: true,           // 启用目录列表
         show_hidden: false
       }
+    },
+    {
+      type: 'upload',
+      path: '/upload',
+      temp_dir: RNFS.CachesDirectoryPath + '/uploads'
     }
   ],
   mime_types: {
@@ -490,7 +496,7 @@ interface ServerConfig {
   mounts?: Mountable[];          // 统一挂载列表
 }
 
-type Mountable = WebDavMount | ZipMount | StaticMount;
+type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount;
 
 interface WebDavMount {
   type: 'webdav';
@@ -502,6 +508,12 @@ interface ZipMount {
   type: 'zip';
   path: string;      // 挂载点，如 "/zip"
   zip_file: string;  // Zip 文件路径
+}
+
+interface UploadMount {
+  type: 'upload';
+  path: string;      // 挂载点，如 "/upload"
+  temp_dir: string;  // 上传文件的临时存储目录
 }
 
 interface StaticMount {
@@ -597,8 +609,9 @@ type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResp
 ### Q: 如何处理大文件上传？
 
 **A**: 当前版本的 `body` 字段是字符串类型，不适合处理大文件。建议：
-- 使用静态文件服务器
-- 在 Rust 层添加流式处理支持
+- **使用 `UploadPlugin` (推荐)**: 配置 `upload` 挂载点。它会拦截 multipart 上传，将文件保存到临时目录，并将文件路径注入到请求头 (`x-uploaded-file-path`)，避免 JS 处理大字符串。
+- 使用静态文件服务器 (用于下载)。
+- 在 Rust 层添加流式处理支持 (高级)。
 
 ### Q: 支持 HTTPS 吗？
 
