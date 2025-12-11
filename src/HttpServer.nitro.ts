@@ -8,6 +8,7 @@ export interface HttpRequest {
     path: string
     headers: Record<string, string>
     body?: string
+    binaryBody?: ArrayBuffer
 }
 
 // HTTP 响应接口
@@ -65,7 +66,12 @@ export interface UploadMount extends BaseMount {
     temp_dir: string
 }
 
-export type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount
+// Buffer 上传插件挂载 (将文件内容作为 ArrayBuffer 传递到 JS,最大支持 100MB)
+export interface BufferUploadMount extends BaseMount {
+    type: 'buffer_upload'
+}
+
+export type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount
 
 // 服务器插件配置
 export interface ServerConfig {

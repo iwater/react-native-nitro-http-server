@@ -1,13 +1,17 @@
+require "json"
+
+package = JSON.parse(File.read(File.join(__dir__, "package.json")))
+
 Pod::Spec.new do |s|
   s.name         = "RNHttpServer"
-  s.version      = "1.3.2"
-  s.summary      = "React Native HTTP Server Module"
-  s.homepage     = "https://github.com/yourname/react-native-nitro-http-server"
-  s.license      = "ISC"
-  s.author       = { "Your Name" => "your.email@example.com" }
+  s.version      = package["version"]
+  s.summary      = package["description"]
+  s.homepage     = package["homepage"]
+  s.license      = package["license"]
+  s.authors      = package["author"]
   
   s.platform     = :ios, "13.0"
-  s.source       = { :git => "https://github.com/yourname/react-native-nitro-http-server.git", :tag => "#{s.version}" }
+  s.source       = { :git => "https://github.com/iwater/react-native-nitro-http-server.git", :tag => "v#{s.version}" }
   
   s.source_files = [
     "ios/**/*.{h,m,mm,swift}",

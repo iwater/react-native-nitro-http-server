@@ -222,9 +222,29 @@ static void c_request_callback(::HttpRequest *cRequest) {
       }
     }
 
-    // Set body
+    // Set body - check if this is a buffer upload request
+    // Buffer upload requests have X-Upload-Filename header set by the plugin
+    bool isBufferUpload = false;
+    if (request.headers.find("x-upload-filename") != request.headers.end()) {
+      isBufferUpload = true;
+    }
+
     if (cRequest->body && cRequest->body_len > 0) {
-      request.body = std::string(cRequest->body, cRequest->body_len);
+      if (isBufferUpload) {
+        // For buffer upload, create an ArrayBuffer to hold the binary data
+        // Use ArrayBuffer::copy to safely copy the data
+        size_t size = static_cast<size_t>(cRequest->body_len);
+        auto buffer = ArrayBuffer::copy(
+            reinterpret_cast<const uint8_t *>(cRequest->body), size);
+        request.binaryBody = buffer;
+
+        std::cout
+            << "[HTTP Server] Buffer upload detected, created ArrayBuffer with "
+            << size << " bytes" << std::endl;
+      } else {
+        // Regular string body
+        request.body = std::string(cRequest->body, cRequest->body_len);
+      }
     }
 
     std::cout << "[HTTP Server] Received request: " << request.method << " "

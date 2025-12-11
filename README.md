@@ -13,7 +13,8 @@ A high-performance React Native HTTP server library, implemented in Rust, suppor
 - ⚡ **Zero Copy**: Direct FFI calls to Rust code.
 - 🔌 **Plugin System**: Support for WebDAV, Zip mounting, and extensible plugins.
 - 🌊 **Streaming APIs**: Support for streaming request/response bodies.
-- 📤 **File Upload Plugin**: Support for handling `multipart/form-data` file uploads efficiently.
+- 📤 **File Upload Plugin**: Support for handling `multipart/form-data` file uploads efficiently (save to disk).
+- 💾 **Buffer Upload Plugin**: Handle file uploads in memory with direct `ArrayBuffer` access.
 - 🔄 **Node.js Compatible**: Compatible with Node.js `http` module API.
 
 ## 📦 Installation
@@ -165,6 +166,10 @@ const config = {
       type: 'upload',
       path: '/upload',
       temp_dir: RNFS.CachesDirectoryPath + '/uploads'
+    },
+    {
+      type: 'buffer_upload',
+      path: '/buffer-upload'
     }
   ],
   mime_types: {
@@ -380,6 +385,7 @@ interface HttpRequest {
   path: string;           // Request path
   headers: Record<string, string>;  // Request headers
   body?: string;          // Request body (optional)
+  binaryBody?: ArrayBuffer; // Binary request body (used by buffer_upload)
 }
 ```
 
@@ -470,6 +476,7 @@ interface HttpRequest {
   path: string;           // Request path
   headers: Record<string, string>;  // Request headers
   body?: string;          // Request body (optional)
+  binaryBody?: ArrayBuffer; // Binary request body (used by buffer_upload)
 }
 ```
 
@@ -492,7 +499,7 @@ interface ServerConfig {
   mounts?: Mountable[];          // Unified mount list
 }
 
-type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount;
+type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount;
 
 interface WebDavMount {
   type: 'webdav';
@@ -510,6 +517,11 @@ interface UploadMount {
   type: 'upload';
   path: string;      // Mount path, e.g., "/upload"
   temp_dir: string;  // Temporary directory for uploaded files
+}
+
+interface BufferUploadMount {
+  type: 'buffer_upload';
+  path: string;      // Mount path, e.g., "/buffer-upload"
 }
 
 interface StaticMount {
@@ -604,6 +616,7 @@ These APIs are used internally by the Node.js compatible layer for streaming sup
 
 **A**: The `body` field in the current version is a string type, which is not suitable for large files. Suggestions:
 - **Use the `UploadPlugin` (Recommended)**: Configure an `upload` mount. It intercepts multipart uploads, saves files to a temporary directory, and injects file paths into request headers (`x-uploaded-file-path`), keeping the JS payload light.
+- **Use the `BufferUploadPlugin`**: Process files in memory (limit 100MB). Access data via `request.binaryBody`.
 - Use the static file server (for downloads).
 - Add streaming support in the Rust layer (advanced).
 

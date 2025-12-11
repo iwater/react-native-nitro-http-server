@@ -13,7 +13,8 @@
 - ⚡ **零拷贝**: 直接通过 FFI 调用 Rust 代码
 - 🔌 **插件系统**: 支持 WebDAV、Zip 挂载等可扩展插件
 - 🌊 **流式 API**: 支持流式请求/响应体处理
-- 📤 **文件上传插件**: 支持高效处理 `multipart/form-data` 文件上传
+- 📤 **文件上传插件**: 支持高效处理 `multipart/form-data` 文件上传（保存到磁盘）
+- 💾 **Buffer Upload 插件**: 在内存中处理文件上传，支持直接访问 `ArrayBuffer`
 - 🔄 **Node.js 兼容**: 兼容 Node.js `http` 模块 API
 
 ## 📦 安装
@@ -165,6 +166,10 @@ const config = {
       type: 'upload',
       path: '/upload',
       temp_dir: RNFS.CachesDirectoryPath + '/uploads'
+    },
+    {
+      type: 'buffer_upload',
+      path: '/buffer-upload'
     }
   ],
   mime_types: {
@@ -384,6 +389,7 @@ interface HttpRequest {
   path: string;           // 请求路径
   headers: Record<string, string>;  // 请求头
   body?: string;          // 请求体（可选）
+  binaryBody?: ArrayBuffer; // 二进制请求体（buffer_upload 插件使用）
 }
 ```
 
@@ -474,6 +480,7 @@ interface HttpRequest {
   path: string;           // 请求路径
   headers: Record<string, string>;  // 请求头
   body?: string;          // 请求体（可选）
+  binaryBody?: ArrayBuffer; // 二进制请求体（buffer_upload 插件使用）
 }
 ```
 
@@ -496,7 +503,7 @@ interface ServerConfig {
   mounts?: Mountable[];          // 统一挂载列表
 }
 
-type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount;
+type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount;
 
 interface WebDavMount {
   type: 'webdav';
@@ -514,6 +521,11 @@ interface UploadMount {
   type: 'upload';
   path: string;      // 挂载点，如 "/upload"
   temp_dir: string;  // 上传文件的临时存储目录
+}
+
+interface BufferUploadMount {
+  type: 'buffer_upload';
+  path: string;      // 挂载点，如 "/buffer-upload"
 }
 
 interface StaticMount {
@@ -610,6 +622,7 @@ type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResp
 
 **A**: 当前版本的 `body` 字段是字符串类型，不适合处理大文件。建议：
 - **使用 `UploadPlugin` (推荐)**: 配置 `upload` 挂载点。它会拦截 multipart 上传，将文件保存到临时目录，并将文件路径注入到请求头 (`x-uploaded-file-path`)，避免 JS 处理大字符串。
+- **使用 `BufferUploadPlugin`**: 在内存中处理文件（限制 100MB）。通过 `request.binaryBody` 访问数据。
 - 使用静态文件服务器 (用于下载)。
 - 在 Rust 层添加流式处理支持 (高级)。
 
