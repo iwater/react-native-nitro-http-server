@@ -15,6 +15,7 @@ A high-performance React Native HTTP server library, implemented in Rust, suppor
 - 🌊 **Streaming APIs**: Support for streaming request/response bodies.
 - 📤 **File Upload Plugin**: Support for handling `multipart/form-data` file uploads efficiently (save to disk).
 - 💾 **Buffer Upload Plugin**: Handle file uploads in memory with direct `ArrayBuffer` access.
+- 🔀 **URL Rewrite Plugin**: Support pattern-based URL rewriting using regular expressions.
 - 🔄 **Node.js Compatible**: Compatible with Node.js `http` module API.
 
 ## 📦 Installation
@@ -170,6 +171,13 @@ const config = {
     {
       type: 'buffer_upload',
       path: '/buffer-upload'
+    },
+    {
+      type: 'rewrite',
+      rules: [
+        { pattern: '^/old/(.*)', replacement: '/static/$1' },
+        { pattern: '^/api/v1/(.*)', replacement: '/api/v2/$1' }
+      ]
     }
   ],
   mime_types: {
@@ -499,7 +507,7 @@ interface ServerConfig {
   mounts?: Mountable[];          // Unified mount list
 }
 
-type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount;
+type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount;
 
 interface WebDavMount {
   type: 'webdav';
@@ -522,6 +530,16 @@ interface UploadMount {
 interface BufferUploadMount {
   type: 'buffer_upload';
   path: string;      // Mount path, e.g., "/buffer-upload"
+}
+
+interface RewriteMount {
+  type: 'rewrite';
+  rules: RewriteRule[];
+}
+
+interface RewriteRule {
+  pattern: string;      // Regex pattern
+  replacement: string;  // Replacement string (supports $1, $2...)
 }
 
 interface StaticMount {

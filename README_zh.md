@@ -15,6 +15,7 @@
 - 🌊 **流式 API**: 支持流式请求/响应体处理
 - 📤 **文件上传插件**: 支持高效处理 `multipart/form-data` 文件上传（保存到磁盘）
 - 💾 **Buffer Upload 插件**: 在内存中处理文件上传，支持直接访问 `ArrayBuffer`
+- 🔀 **URL 重写插件**: 支持基于正则表达式的 URL 重写
 - 🔄 **Node.js 兼容**: 兼容 Node.js `http` 模块 API
 
 ## 📦 安装
@@ -170,6 +171,13 @@ const config = {
     {
       type: 'buffer_upload',
       path: '/buffer-upload'
+    },
+    {
+      type: 'rewrite',
+      rules: [
+        { pattern: '^/old/(.*)', replacement: '/static/$1' },
+        { pattern: '^/api/v1/(.*)', replacement: '/api/v2/$1' }
+      ]
     }
   ],
   mime_types: {
@@ -503,7 +511,7 @@ interface ServerConfig {
   mounts?: Mountable[];          // 统一挂载列表
 }
 
-type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount;
+type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount;
 
 interface WebDavMount {
   type: 'webdav';
@@ -526,6 +534,16 @@ interface UploadMount {
 interface BufferUploadMount {
   type: 'buffer_upload';
   path: string;      // 挂载点，如 "/buffer-upload"
+}
+
+interface RewriteMount {
+  type: 'rewrite';
+  rules: RewriteRule[];
+}
+
+interface RewriteRule {
+  pattern: string;      // 正则表达式模式
+  replacement: string;  // 替换目标（支持 $1, $2 等捕获组）
 }
 
 interface StaticMount {

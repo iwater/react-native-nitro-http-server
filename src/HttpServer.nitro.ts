@@ -71,7 +71,19 @@ export interface BufferUploadMount extends BaseMount {
     type: 'buffer_upload'
 }
 
-export type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount
+// 重写规则
+export interface RewriteRule {
+    pattern: string      // 正则表达式模式
+    replacement: string  // 替换目标（支持 $1, $2 等捕获组）
+}
+
+// Rewrite 挂载
+export interface RewriteMount {
+    type: 'rewrite'
+    rules: RewriteRule[]
+}
+
+export type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount
 
 // 服务器插件配置
 export interface ServerConfig {
