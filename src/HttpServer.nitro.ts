@@ -88,6 +88,7 @@ export type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | Buf
 // 服务器插件配置
 export interface ServerConfig {
     root_dir?: string                       // 静态文件根目录（可选，作为默认静态挂载点）
+    verbose?: boolean | 'off' | 'error' | 'warn' | 'info' | 'debug'  // 日志等级
     mime_types?: Record<string, string>     // 自定义 MIME types
     mounts?: Mountable[]                    // 统一挂载列表
 }

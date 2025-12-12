@@ -84,9 +84,9 @@ static void extractAndSendResponse(const std::string &requestId,
     bodyLen = bodyStr.length();
   }
 
-  std::cout << "[HTTP Server] Sending response for request: " << requestId
-            << ", status: " << statusCode << ", headers: " << headersJson
-            << ", body length: " << bodyLen << std::endl;
+  // std::cout << "[HTTP Server] Sending response for request: " << requestId
+  //           << ", status: " << statusCode << ", headers: " << headersJson
+  //           << ", body length: " << bodyLen << std::endl;
 
   // 直接发送响应（send_response 内部会将数据复制到 Rust）
   send_response(requestId.c_str(), statusCode, headersJson.c_str(), body,
@@ -238,17 +238,17 @@ static void c_request_callback(::HttpRequest *cRequest) {
             reinterpret_cast<const uint8_t *>(cRequest->body), size);
         request.binaryBody = buffer;
 
-        std::cout
-            << "[HTTP Server] Buffer upload detected, created ArrayBuffer with "
-            << size << " bytes" << std::endl;
+        // std::cout
+        //     << "[HTTP Server] Buffer upload detected, created ArrayBuffer with "
+        //     << size << " bytes" << std::endl;
       } else {
         // Regular string body
         request.body = std::string(cRequest->body, cRequest->body_len);
       }
     }
 
-    std::cout << "[HTTP Server] Received request: " << request.method << " "
-              << request.path << ", ID: " << request.requestId << std::endl;
+    // std::cout << "[HTTP Server] Received request: " << request.method << " "
+    //           << request.path << ", ID: " << request.requestId << std::endl;
 
     // 保存 requestId 用于后续响应
     std::string requestId = request.requestId;
@@ -359,10 +359,10 @@ HybridHttpServer::sendResponse(const std::string &requestId,
       bodyLen = bodyStr.length();
     }
 
-    std::cout << "[HTTP Server] Sending response (sendResponse) for request: "
-              << requestId << ", status: " << statusCode
-              << ", headers: " << headersJson << ", body length: " << bodyLen
-              << std::endl;
+    // std::cout << "[HTTP Server] Sending response (sendResponse) for request: "
+    //           << requestId << ", status: " << statusCode
+    //           << ", headers: " << headersJson << ", body length: " << bodyLen
+    //           << std::endl;
 
     return send_response(requestId.c_str(), statusCode, headersJson.c_str(),
                          body, static_cast<int>(bodyLen));
@@ -539,8 +539,8 @@ std::shared_ptr<Promise<bool>> HybridHttpServer::sendBinaryResponse(
     const uint8_t *data = body->data();
     size_t size = body->size();
     binaryData.assign(data, data + size);
-    std::cout << "[HTTP Server] sendBinaryResponse: copied " << size
-              << " bytes on JS thread" << std::endl;
+    // std::cout << "[HTTP Server] sendBinaryResponse: copied " << size
+    //           << " bytes on JS thread" << std::endl;
   }
 
   int code = static_cast<int>(statusCode);
@@ -556,10 +556,10 @@ std::shared_ptr<Promise<bool>> HybridHttpServer::sendBinaryResponse(
       bodyLen = binaryData.size();
     }
 
-    std::cout
-        << "[HTTP Server] sendBinaryResponse: sending response for request "
-        << requestId << ", status: " << code << ", body length: " << bodyLen
-        << std::endl;
+    // std::cout
+    //     << "[HTTP Server] sendBinaryResponse: sending response for request "
+    //     << requestId << ", status: " << code << ", body length: " << bodyLen
+    //     << std::endl;
 
     return send_response(requestId.c_str(), code, headersJson.c_str(), bodyPtr,
                          static_cast<int>(bodyLen));

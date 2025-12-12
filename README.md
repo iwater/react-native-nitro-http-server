@@ -143,6 +143,7 @@ const staticDir = RNFS.DocumentDirectoryPath + '/www';
 // Configure plugins
 const config = {
   root_dir: staticDir,           // Static file root (Optional)
+  verbose: 'info',               // Log level: 'off' | 'error' | 'warn' | 'info' | 'debug' (default: 'off')
   mounts: [
     {
       type: 'webdav',
@@ -503,6 +504,7 @@ interface HttpResponse {
 ```typescript
 interface ServerConfig {
   root_dir?: string;             // Static file root (Optional, as default static mount)
+  verbose?: boolean | 'off' | 'error' | 'warn' | 'info' | 'debug'; // Log level (default: 'off')
   mime_types?: MimeTypesConfig;
   mounts?: Mountable[];          // Unified mount list
 }

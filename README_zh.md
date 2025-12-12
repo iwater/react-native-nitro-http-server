@@ -143,6 +143,7 @@ const staticDir = RNFS.DocumentDirectoryPath + '/www';
 // 配置插件
 const config = {
   root_dir: staticDir,           // 静态文件根目录（可选，作为默认静态挂载点）
+  verbose: 'info',               // 日志等级: 'off' | 'error' | 'warn' | 'info' | 'debug' (默认 'off')
   mounts: [
     {
       type: 'webdav',
@@ -507,6 +508,7 @@ interface HttpResponse {
 ```typescript
 interface ServerConfig {
   root_dir?: string;             // 静态文件根目录（可选，作为默认静态挂载点）
+  verbose?: boolean | 'off' | 'error' | 'warn' | 'info' | 'debug'; // 日志等级 (默认 'off')
   mime_types?: MimeTypesConfig;
   mounts?: Mountable[];          // 统一挂载列表
 }
