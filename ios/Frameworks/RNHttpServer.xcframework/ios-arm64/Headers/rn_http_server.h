@@ -126,6 +126,54 @@ bool write_response_chunk(const char* request_id, const char* chunk, int chunk_l
 /// @return 如果成功结束响应返回true，否则返回false
 bool end_response(const char* request_id, int status_code, const char* headers_json);
 
+// ==================== WebSocket API ====================
+
+/// WebSocket 事件结构体
+typedef struct WebSocketEvent {
+    const char* connection_id;  // 连接 ID
+    int event_type;             // 事件类型: 1=Open, 2=Message, 3=Close, 4=Error
+    const char* path;           // 连接路径
+    const char* query;          // 查询字符串 (仅 Open 事件)
+    const char* headers_json;   // HTTP 头 JSON (仅 Open 事件)
+    const char* text_data;      // 文本消息数据
+    int text_len;               // 文本消息长度
+    const char* binary_data;    // 二进制消息数据
+    int binary_len;             // 二进制消息长度
+    int close_code;             // 关闭代码 (仅 Close 事件)
+    const char* close_reason;   // 关闭原因 (仅 Close 事件)
+} WebSocketEvent;
+
+/// WebSocket 事件回调函数类型
+typedef void (*WebSocketCallback)(const WebSocketEvent* event);
+
+/// 设置 WebSocket 事件回调
+/// 
+/// @param callback WebSocket 事件回调函数
+void set_websocket_callback(WebSocketCallback callback);
+
+/// 发送 WebSocket 文本消息
+/// 
+/// @param connection_id 连接 ID
+/// @param message 要发送的文本消息
+/// @return 发送成功返回 true
+bool ws_send_text(const char* connection_id, const char* message);
+
+/// 发送 WebSocket 二进制消息
+/// 
+/// @param connection_id 连接 ID
+/// @param data 二进制数据
+/// @param len 数据长度
+/// @return 发送成功返回 true
+bool ws_send_binary(const char* connection_id, const char* data, int len);
+
+/// 关闭 WebSocket 连接
+/// 
+/// @param connection_id 连接 ID
+/// @param code 关闭代码 (1000 表示正常关闭)
+/// @param reason 关闭原因
+/// @return 关闭成功返回 true
+bool ws_close(const char* connection_id, int code, const char* reason);
+
 #ifdef __cplusplus
 }
 #endif

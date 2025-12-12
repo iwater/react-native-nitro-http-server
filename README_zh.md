@@ -16,6 +16,7 @@
 - 📤 **文件上传插件**: 支持高效处理 `multipart/form-data` 文件上传（保存到磁盘）
 - 💾 **Buffer Upload 插件**: 在内存中处理文件上传，支持直接访问 `ArrayBuffer`
 - 🔀 **URL 重写插件**: 支持基于正则表达式的 URL 重写
+- 🔌 **WebSocket 插件**: 实时双向通信，支持获取完整的握手信息
 - 🔄 **Node.js 兼容**: 兼容 Node.js `http` 模块 API
 
 ## 📦 安装
@@ -179,6 +180,10 @@ const config = {
         { pattern: '^/old/(.*)', replacement: '/static/$1' },
         { pattern: '^/api/v1/(.*)', replacement: '/api/v2/$1' }
       ]
+    },
+    {
+      type: 'websocket',
+      path: '/ws'
     }
   ],
   mime_types: {
@@ -201,6 +206,40 @@ const server = await createConfigServer(8080, async (request) => {
 // - 如果缺少索引文件，可以浏览目录
 // - 访问 staticDir 中的静态文件
 // - 获得动态 API 响应
+// - 通过 ws://localhost:8080/ws 连接 WebSocket
+```
+
+### WebSocket 服务器
+
+提供实时双向通信，支持获取完整的握手信息。
+
+```typescript
+import { ConfigServer } from 'react-native-nitro-http-server';
+
+const server = new ConfigServer();
+
+// 注册 WebSocket 处理器（必须在 start 之前调用）
+server.onWebSocket('/ws', (ws, request) => {
+    // 获取握手信息
+    console.log('Path:', request.path);
+    console.log('Query:', request.query);     // 如 "token=abc&user=123"
+    console.log('Headers:', request.headers); // 完整的 HTTP 握手头
+    
+    // 处理事件
+    ws.onmessage = (e) => {
+        console.log('收到:', e.data);
+        ws.send('回复: ' + e.data);
+    };
+    
+    ws.onclose = (e) => {
+        console.log('关闭:', e.code, e.reason);
+    };
+});
+
+// 启动带 WebSocket 配置的服务器
+await server.start(8080, httpHandler, {
+    mounts: [{ type: 'websocket', path: '/ws' }]
+});
 ```
 
 ### RESTful API 示例
@@ -513,7 +552,7 @@ interface ServerConfig {
   mounts?: Mountable[];          // 统一挂载列表
 }
 
-type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount;
+type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount | WebSocketMount;
 
 interface WebDavMount {
   type: 'webdav';
@@ -543,25 +582,24 @@ interface RewriteMount {
   rules: RewriteRule[];
 }
 
-interface RewriteRule {
-  pattern: string;      // 正则表达式模式
-  replacement: string;  // 替换目标（支持 $1, $2 等捕获组）
+interface WebSocketMount {
+  type: 'websocket';
+  path: string;              // WebSocket 端点，如 "/ws"
+  max_message_size?: number; // 最大消息大小（字节，默认 64MB）
 }
 
-interface StaticMount {
-  type: 'static';
-  path: string;      // 挂载点，如 "/images"
-  root: string;      // 本地文件系统目录
-  dir_list?: DirListConfig;
-  default_index?: string[];
+// WebSocket 连接请求信息
+interface WebSocketConnectionRequest {
+  path: string;                      // 连接路径
+  query: string;                     // 查询字符串
+  headers: Record<string, string>;   // HTTP 握手头
 }
 
-type MimeTypesConfig = Record<string, string>; // 扩展名 -> mime-type 映射
-
-interface DirListConfig {
-  enabled: boolean;        // 启用目录列表
-  show_hidden?: boolean;   // 显示隐藏文件 (默认: false)
-}
+// WebSocket 连接处理器
+type WebSocketConnectionHandler = (
+  ws: ServerWebSocket, 
+  request: WebSocketConnectionRequest
+) => void;
 ```
 
 ```

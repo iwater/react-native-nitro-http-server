@@ -83,7 +83,13 @@ export interface RewriteMount {
     rules: RewriteRule[]
 }
 
-export type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount
+// WebSocket 挂载
+export interface WebSocketMount extends BaseMount {
+    type: 'websocket'
+    max_message_size?: number  // 最大消息大小（字节），默认 64MB
+}
+
+export type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount | WebSocketMount
 
 // 服务器插件配置
 export interface ServerConfig {
@@ -92,6 +98,26 @@ export interface ServerConfig {
     mime_types?: Record<string, string>     // 自定义 MIME types
     mounts?: Mountable[]                    // 统一挂载列表
 }
+
+// WebSocket 事件类型
+export type WebSocketEventType = 'open' | 'message' | 'close' | 'error'
+
+// WebSocket 事件接口
+export interface WebSocketEvent {
+    connectionId: string           // 连接 ID
+    type: WebSocketEventType       // 事件类型
+    path?: string                  // 连接路径
+    query?: string                 // 查询字符串 (仅 open 事件)
+    headersJson?: string           // HTTP 头 JSON (仅 open 事件)
+    textData?: string              // 文本消息数据
+    binaryData?: ArrayBuffer       // 二进制消息数据
+    closeCode?: number             // 关闭代码
+    closeReason?: string           // 关闭原因
+    errorMessage?: string          // 错误信息
+}
+
+// WebSocket 事件处理器类型
+export type WebSocketHandler = (event: WebSocketEvent) => void
 
 // 请求处理器类型
 export type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResponse
@@ -208,4 +234,37 @@ export interface HttpServer extends HybridObject<{
      * @returns 是否启动成功
      */
     startServerWithConfig(port: number, handler: RequestHandler, configJson: string, host?: string): Promise<boolean>
+
+    // ==================== WebSocket API ====================
+
+    /**
+     * 设置 WebSocket 事件处理器
+     * @param handler WebSocket 事件处理器
+     */
+    setWebSocketHandler(handler: WebSocketHandler): void
+
+    /**
+     * 发送 WebSocket 文本消息
+     * @param connectionId 连接 ID
+     * @param message 文本消息
+     * @returns 是否发送成功
+     */
+    wsSendText(connectionId: string, message: string): Promise<boolean>
+
+    /**
+     * 发送 WebSocket 二进制消息
+     * @param connectionId 连接 ID
+     * @param data 二进制数据
+     * @returns 是否发送成功
+     */
+    wsSendBinary(connectionId: string, data: ArrayBuffer): Promise<boolean>
+
+    /**
+     * 关闭 WebSocket 连接
+     * @param connectionId 连接 ID
+     * @param code 关闭代码 (默认 1000)
+     * @param reason 关闭原因
+     * @returns 是否关闭成功
+     */
+    wsClose(connectionId: string, code?: number, reason?: string): Promise<boolean>
 }

@@ -70,10 +70,30 @@ public:
                      const std::string &headersJson,
                      const std::shared_ptr<ArrayBuffer> &body) override;
 
+  // ==================== WebSocket API ====================
+
+  void setWebSocketHandler(
+      const std::function<void(const WebSocketEvent &)> &handler) override;
+
+  std::shared_ptr<Promise<bool>>
+  wsSendText(const std::string &connectionId,
+             const std::string &message) override;
+
+  std::shared_ptr<Promise<bool>>
+  wsSendBinary(const std::string &connectionId,
+               const std::shared_ptr<ArrayBuffer> &data) override;
+
+  std::shared_ptr<Promise<bool>>
+  wsClose(const std::string &connectionId, std::optional<double> code,
+          const std::optional<std::string> &reason) override;
+
 private:
   // 发送 HTTP 响应到 Rust 服务器的辅助方法
   void sendHttpResponse(const std::string &requestId,
                         const HttpResponse &response);
+
+  // WebSocket 事件处理器
+  std::function<void(const WebSocketEvent &)> _wsHandler;
 };
 
 } // namespace margelo::nitro::http_server

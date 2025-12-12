@@ -239,7 +239,8 @@ static void c_request_callback(::HttpRequest *cRequest) {
         request.binaryBody = buffer;
 
         // std::cout
-        //     << "[HTTP Server] Buffer upload detected, created ArrayBuffer with "
+        //     << "[HTTP Server] Buffer upload detected, created ArrayBuffer
+        //     with "
         //     << size << " bytes" << std::endl;
       } else {
         // Regular string body
@@ -348,25 +349,27 @@ HybridHttpServer::sendResponse(const std::string &requestId,
   std::string headersJson = serializeHeaders(response.headers);
   int statusCode = static_cast<int>(response.statusCode);
 
-  return Promise<bool>::async([requestId, statusCode, headersJson,
-                               bodyStr]() -> bool {
-    const char *body = "";
-    size_t bodyLen = 0;
+  return Promise<bool>::async(
+      [requestId, statusCode, headersJson, bodyStr]() -> bool {
+        const char *body = "";
+        size_t bodyLen = 0;
 
-    // 优先使用 binaryBody（二进制数据）
-    if (!bodyStr.empty()) {
-      body = bodyStr.c_str();
-      bodyLen = bodyStr.length();
-    }
+        // 优先使用 binaryBody（二进制数据）
+        if (!bodyStr.empty()) {
+          body = bodyStr.c_str();
+          bodyLen = bodyStr.length();
+        }
 
-    // std::cout << "[HTTP Server] Sending response (sendResponse) for request: "
-    //           << requestId << ", status: " << statusCode
-    //           << ", headers: " << headersJson << ", body length: " << bodyLen
-    //           << std::endl;
+        // std::cout << "[HTTP Server] Sending response (sendResponse) for
+        // request: "
+        //           << requestId << ", status: " << statusCode
+        //           << ", headers: " << headersJson << ", body length: " <<
+        //           bodyLen
+        //           << std::endl;
 
-    return send_response(requestId.c_str(), statusCode, headersJson.c_str(),
-                         body, static_cast<int>(bodyLen));
-  });
+        return send_response(requestId.c_str(), statusCode, headersJson.c_str(),
+                             body, static_cast<int>(bodyLen));
+      });
 }
 
 std::shared_ptr<Promise<void>> HybridHttpServer::stop() {
@@ -563,6 +566,151 @@ std::shared_ptr<Promise<bool>> HybridHttpServer::sendBinaryResponse(
 
     return send_response(requestId.c_str(), code, headersJson.c_str(), bodyPtr,
                          static_cast<int>(bodyLen));
+  });
+}
+
+// ==================== WebSocket API ====================
+
+// 全局 WebSocket 事件处理器
+static std::function<void(const WebSocketEvent &)> g_wsHandler;
+static std::mutex g_wsHandlerMutex;
+
+// C 回调函数：从 Rust 服务器调用
+static void c_websocket_callback(const ::WebSocketEvent *cEvent) {
+  if (!cEvent) {
+    return;
+  }
+
+  std::function<void(const WebSocketEvent &)> handler;
+  {
+    std::lock_guard<std::mutex> lock(g_wsHandlerMutex);
+    if (!g_wsHandler) {
+      return;
+    }
+    handler = g_wsHandler;
+  }
+
+  try {
+    WebSocketEvent event;
+
+    if (cEvent->connection_id) {
+      event.connectionId = std::string(cEvent->connection_id);
+    }
+
+    // 转换事件类型
+    switch (cEvent->event_type) {
+    case 1:
+      event.type = WebSocketEventType::OPEN;
+      break;
+    case 2:
+      event.type = WebSocketEventType::MESSAGE;
+      break;
+    case 3:
+      event.type = WebSocketEventType::CLOSE;
+      break;
+    case 4:
+      event.type = WebSocketEventType::ERROR;
+      break;
+    default:
+      return;
+    }
+
+    // 路径
+    if (cEvent->path) {
+      event.path = std::string(cEvent->path);
+    }
+
+    // 查询字符串
+    if (cEvent->query) {
+      event.query = std::string(cEvent->query);
+    }
+
+    // HTTP 头 JSON
+    if (cEvent->headers_json) {
+      event.headersJson = std::string(cEvent->headers_json);
+    }
+
+    // 文本数据
+    if (cEvent->text_data && cEvent->text_len > 0) {
+      event.textData = std::string(cEvent->text_data, cEvent->text_len);
+    }
+
+    // 二进制数据
+    if (cEvent->binary_data && cEvent->binary_len > 0) {
+      size_t size = static_cast<size_t>(cEvent->binary_len);
+      auto buffer = ArrayBuffer::copy(
+          reinterpret_cast<const uint8_t *>(cEvent->binary_data), size);
+      event.binaryData = buffer;
+    }
+
+    // 关闭代码和原因
+    if (cEvent->close_code > 0) {
+      event.closeCode = static_cast<double>(cEvent->close_code);
+    }
+    if (cEvent->close_reason) {
+      event.closeReason = std::string(cEvent->close_reason);
+    }
+
+    // 调用 JavaScript 处理器
+    handler(event);
+
+  } catch (const std::exception &e) {
+    std::cerr << "Error in c_websocket_callback: " << e.what() << std::endl;
+  }
+}
+
+void HybridHttpServer::setWebSocketHandler(
+    const std::function<void(const WebSocketEvent &)> &handler) {
+  // 保存处理器
+  {
+    std::lock_guard<std::mutex> lock(g_wsHandlerMutex);
+    g_wsHandler = handler;
+  }
+  _wsHandler = handler;
+
+  // 设置 C 回调
+  set_websocket_callback(c_websocket_callback);
+}
+
+std::shared_ptr<Promise<bool>>
+HybridHttpServer::wsSendText(const std::string &connectionId,
+                             const std::string &message) {
+  return Promise<bool>::async([connectionId, message]() -> bool {
+    return ws_send_text(connectionId.c_str(), message.c_str());
+  });
+}
+
+std::shared_ptr<Promise<bool>>
+HybridHttpServer::wsSendBinary(const std::string &connectionId,
+                               const std::shared_ptr<ArrayBuffer> &data) {
+  // 在 JS 线程上同步复制数据
+  std::vector<uint8_t> binaryData;
+  if (data && data->data() && data->size() > 0) {
+    const uint8_t *dataPtr = data->data();
+    size_t size = data->size();
+    binaryData.assign(dataPtr, dataPtr + size);
+  }
+
+  return Promise<bool>::async(
+      [connectionId, binaryData = std::move(binaryData)]() -> bool {
+        if (binaryData.empty()) {
+          return false;
+        }
+        return ws_send_binary(connectionId.c_str(),
+                              reinterpret_cast<const char *>(binaryData.data()),
+                              static_cast<int>(binaryData.size()));
+      });
+}
+
+std::shared_ptr<Promise<bool>>
+HybridHttpServer::wsClose(const std::string &connectionId,
+                          std::optional<double> code,
+                          const std::optional<std::string> &reason) {
+  int closeCode = code.has_value() ? static_cast<int>(code.value()) : 1000;
+  std::string closeReason = reason.has_value() ? reason.value() : "";
+
+  return Promise<bool>::async([connectionId, closeCode, closeReason]() -> bool {
+    return ws_close(connectionId.c_str(), closeCode, closeReason.c_str());
   });
 }
 

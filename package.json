@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-http-server",
-  "version": "1.3.5",
+  "version": "1.4.0",
   "description": "React Native HTTP Server with Nitro Modules",
   "repository": {
     "type": "git",

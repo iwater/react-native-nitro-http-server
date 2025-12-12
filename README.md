@@ -16,6 +16,7 @@ A high-performance React Native HTTP server library, implemented in Rust, suppor
 - 📤 **File Upload Plugin**: Support for handling `multipart/form-data` file uploads efficiently (save to disk).
 - 💾 **Buffer Upload Plugin**: Handle file uploads in memory with direct `ArrayBuffer` access.
 - 🔀 **URL Rewrite Plugin**: Support pattern-based URL rewriting using regular expressions.
+- 🔌 **WebSocket Plugin**: Real-time bidirectional communication with full handshake info access.
 - 🔄 **Node.js Compatible**: Compatible with Node.js `http` module API.
 
 ## 📦 Installation
@@ -179,6 +180,10 @@ const config = {
         { pattern: '^/old/(.*)', replacement: '/static/$1' },
         { pattern: '^/api/v1/(.*)', replacement: '/api/v2/$1' }
       ]
+    },
+    {
+      type: 'websocket',
+      path: '/ws'
     }
   ],
   mime_types: {
@@ -201,6 +206,40 @@ const server = await createConfigServer(8080, async (request) => {
 // - Browse directories if index file is missing
 // - Static files from staticDir
 // - Dynamic API responses
+// - WebSocket at ws://localhost:8080/ws
+```
+
+### WebSocket Server
+
+Provides real-time bidirectional communication with full access to handshake information.
+
+```typescript
+import { ConfigServer } from 'react-native-nitro-http-server';
+
+const server = new ConfigServer();
+
+// Register WebSocket handler (before starting the server)
+server.onWebSocket('/ws', (ws, request) => {
+    // Access handshake info
+    console.log('Path:', request.path);
+    console.log('Query:', request.query);     // e.g., "token=abc&user=123"
+    console.log('Headers:', request.headers); // Full HTTP handshake headers
+    
+    // Handle events
+    ws.onmessage = (e) => {
+        console.log('Received:', e.data);
+        ws.send('Echo: ' + e.data);
+    };
+    
+    ws.onclose = (e) => {
+        console.log('Closed:', e.code, e.reason);
+    };
+});
+
+// Start server with WebSocket mount
+await server.start(8080, httpHandler, {
+    mounts: [{ type: 'websocket', path: '/ws' }]
+});
 ```
 
 ### RESTful API Example
@@ -509,7 +548,7 @@ interface ServerConfig {
   mounts?: Mountable[];          // Unified mount list
 }
 
-type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount;
+type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount | WebSocketMount;
 
 interface WebDavMount {
   type: 'webdav';
@@ -538,6 +577,25 @@ interface RewriteMount {
   type: 'rewrite';
   rules: RewriteRule[];
 }
+
+interface WebSocketMount {
+  type: 'websocket';
+  path: string;              // WebSocket endpoint, e.g., "/ws"
+  max_message_size?: number; // Max message size in bytes (default: 64MB)
+}
+
+// WebSocket Connection Request
+interface WebSocketConnectionRequest {
+  path: string;                      // Connection path
+  query: string;                     // Query string
+  headers: Record<string, string>;   // HTTP handshake headers
+}
+
+// WebSocket Connection Handler
+type WebSocketConnectionHandler = (
+  ws: ServerWebSocket, 
+  request: WebSocketConnectionRequest
+) => void;
 
 interface RewriteRule {
   pattern: string;      // Regex pattern
