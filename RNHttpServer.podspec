@@ -23,8 +23,7 @@ Pod::Spec.new do |s|
   # 添加你的 xcframework
   s.vendored_frameworks = "ios/Frameworks/RNHttpServer.xcframework"
   
-  # 确保正确链接 C++ 库
-  s.libraries = "c++"
+  # 动态库已自包含所有依赖，无需显式链接 C++ 运行时
   
   s.pod_target_xcconfig = {
     "HEADER_SEARCH_PATHS" => [
@@ -35,8 +34,8 @@ Pod::Spec.new do |s|
       "\"$(PODS_TARGET_SRCROOT)/nitrogen/generated/ios/c++\"",
       "\"$(PODS_TARGET_SRCROOT)/nitrogen/generated/ios\"",
       "\"$(PODS_TARGET_SRCROOT)/cpp\"",
-      "\"$(PODS_TARGET_SRCROOT)/ios/Frameworks/RNHttpServer.xcframework/ios-arm64/Headers\"",
-      "\"$(PODS_TARGET_SRCROOT)/ios/Frameworks/RNHttpServer.xcframework/ios-arm64_x86_64-simulator/Headers\""
+      "\"$(PODS_TARGET_SRCROOT)/ios/Frameworks/RNHttpServer.xcframework/ios-arm64/RNHttpServer.framework/Headers\"",
+      "\"$(PODS_TARGET_SRCROOT)/ios/Frameworks/RNHttpServer.xcframework/ios-arm64_x86_64-simulator/RNHttpServer.framework/Headers\""
     ],
     "OTHER_SWIFT_FLAGS" => "-cxx-interoperability-mode=default"
   }
