@@ -1,6 +1,6 @@
 import { NitroModules } from 'react-native-nitro-modules'
 import type { HttpServer as NitroHttpServer, HttpRequest, HttpResponse as NitroHttpResponse, ServerConfig } from './HttpServer.nitro'
-import { createServer } from 'http'
+import { createServer } from './http'
 
 // Redefine HttpResponse for User (User sees unified body)
 export interface HttpResponse extends Omit<NitroHttpResponse, 'body' | 'binaryBody'> {

@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-http-server",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "React Native HTTP Server with Nitro Modules",
   "repository": {
     "type": "git",
@@ -43,17 +43,20 @@
   ],
   "author": "",
   "license": "ISC",
+  "peerDependencies": {
+    "react-native-nitro-modules": "^0.32.0"
+  },
   "dependencies": {
-    "eventemitter3": "^5.0.1",
-    "react-native-nitro-modules": "^0.31.10"
+    "eventemitter3": "^5.0.1"
   },
   "devDependencies": {
     "@types/events": "^3",
     "@types/node": "^24.10.1",
-    "nitrogen": "^0.31.10",
-    "typescript": "^5.9.3"
+    "nitrogen": "^0.32.0",
+    "typescript": "^5.9.3",
+    "react-native-nitro-modules": "^0.32.0"
   },
-  "packageManager": "yarn@4.11.0",
+  "packageManager": "yarn@4.12.0",
   "files": [
     "lib/",
     "src/",
