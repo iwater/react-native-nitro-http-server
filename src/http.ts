@@ -3,6 +3,7 @@
 
 import { EventEmitter } from 'eventemitter3';
 import { NitroModules } from 'react-native-nitro-modules';
+import { Buffer } from 'react-native-nitro-buffer';
 import type { HttpServer as NitroHttpServer, HttpRequest, HttpResponse } from './HttpServer.nitro';
 
 // ========== Types ==========

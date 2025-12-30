@@ -1,10 +1,10 @@
 {
   "name": "react-native-nitro-http-server",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "React Native HTTP Server with Nitro Modules",
   "repository": {
     "type": "git",
-    "url": "https://github.com/iwater/react-native-nitro-http-server.git"
+    "url": "git+https://github.com/iwater/react-native-nitro-http-server.git"
   },
   "homepage": "https://github.com/iwater/react-native-nitro-http-server",
   "authors": {
@@ -14,21 +14,7 @@
   "main": "./lib/index.js",
   "module": "./lib/index.js",
   "types": "./lib/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./lib/index.d.ts",
-      "import": "./lib/index.js",
-      "require": "./lib/index.js",
-      "default": "./lib/index.js"
-    },
-    "./http": {
-      "types": "./lib/http.d.ts",
-      "import": "./lib/http.js",
-      "require": "./lib/http.js",
-      "default": "./lib/http.js"
-    },
-    "./package.json": "./package.json"
-  },
+  "react-native": "src/index.ts",
   "scripts": {
     "build": "tsc",
     "prepare": "yarn build",
@@ -47,14 +33,15 @@
     "react-native-nitro-modules": "^0.32.0"
   },
   "dependencies": {
-    "eventemitter3": "^5.0.1"
+    "eventemitter3": "^5.0.1",
+    "react-native-nitro-buffer": "^0.0.13"
   },
   "devDependencies": {
     "@types/events": "^3",
     "@types/node": "^24.10.1",
     "nitrogen": "^0.32.0",
-    "typescript": "^5.9.3",
-    "react-native-nitro-modules": "^0.32.0"
+    "react-native-nitro-modules": "^0.32.0",
+    "typescript": "^5.9.3"
   },
   "packageManager": "yarn@4.12.0",
   "files": [

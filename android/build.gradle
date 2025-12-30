@@ -8,12 +8,12 @@ def reactNativeArchitectures() {
 
 android {
     namespace "com.margelo.nitro.http_server"
-    compileSdkVersion 34
-    ndkVersion "27.1.12297006"
+    compileSdkVersion getExtOrDefault('compileSdkVersion', 35)
+    ndkVersion getExtOrDefault("ndkVersion", "27.1.12297006")
 
     defaultConfig {
-        minSdkVersion 24
-        targetSdkVersion 34
+        minSdkVersion getExtOrDefault('minSdkVersion', 21)
+        targetSdkVersion getExtOrDefault('targetSdkVersion', 35)
 
         externalNativeBuild {
             cmake {
