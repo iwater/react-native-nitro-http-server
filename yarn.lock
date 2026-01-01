@@ -172,14 +172,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"react-native-nitro-buffer@npm:^0.0.13":
-  version: 0.0.13
-  resolution: "react-native-nitro-buffer@npm:0.0.13"
+"react-native-nitro-buffer@npm:~0.0.14":
+  version: 0.0.14
+  resolution: "react-native-nitro-buffer@npm:0.0.14"
   peerDependencies:
     react: "*"
     react-native: "*"
     react-native-nitro-modules: ^0.32.0
-  checksum: 10c0/a308ba1494cb2b316547742929555a8b96a3f76c0d88118b79f129544d49db66d4ae75da1184f1559116c5a3008eba2629edf0063325e76840596f2a10647756
+  checksum: 10c0/20e4177cfe7317bf473a1907a06278ff79a60de4d289ed69480679f33b84d293e9601085cd3ccd02139fa14ef7154a48b4b43bc8444d1882ee6dfa1b35f8431d
   languageName: node
   linkType: hard
 
@@ -191,7 +191,7 @@ __metadata:
     "@types/node": "npm:^24.10.1"
     eventemitter3: "npm:^5.0.1"
     nitrogen: "npm:^0.32.0"
-    react-native-nitro-buffer: "npm:^0.0.13"
+    react-native-nitro-buffer: "npm:~0.0.14"
     react-native-nitro-modules: "npm:^0.32.0"
     typescript: "npm:^5.9.3"
   peerDependencies:

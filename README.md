@@ -2,6 +2,10 @@
 
 A high-performance React Native HTTP server library, implemented in Rust, supporting dynamic request handling and static file serving.
 
+[![license](https://img.shields.io/badge/license-ISC-blue.svg)](https://github.com/iwater/rn-http-server/blob/main/LICENSE)
+[![platform](https://img.shields.io/badge/platform-ios%20%7C%20android-lightgrey.svg)]()
+[中文文档](./README_zh.md)
+
 ## ✨ Features
 
 - 🚀 **High Performance**: Built on Rust's Actix-web framework, delivering exceptional performance.
