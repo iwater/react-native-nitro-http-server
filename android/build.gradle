@@ -23,6 +23,8 @@ android {
             cmake {
                 cppFlags "-fexceptions", "-frtti", "-std=c++20"
                 arguments "-DANDROID_STL=c++_shared"
+                // Enable 16KB page size support for NDK r28+ toolchain (optional; CMakeLists.txt linker flag ensures alignment on older NDK)
+                arguments "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
                 abiFilters (*reactNativeArchitectures())
             }
         }

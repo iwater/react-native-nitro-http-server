@@ -5,6 +5,14 @@ set(PACKAGE_NAME RNHttpServer)
 set(CMAKE_VERBOSE_MAKEFILE ON)
 set(CMAKE_CXX_STANDARD 20)
 
+# Android 16KB page size support (AOSP Android 15+):
+# The JNI wrapper .so must be built with 16KB alignment so the app loads on devices
+# that use 16KB memory pages. Only arm64-v8a and x86_64 support 16KB; prebuilt
+# librn_http_server.so in android/libs/ should also be rebuilt with 16KB alignment.
+if(ANDROID_ABI STREQUAL "arm64-v8a" OR ANDROID_ABI STREQUAL "x86_64")
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
+endif()
+
 # Add our custom implementation and JNI adapter
 add_library(${PACKAGE_NAME} SHARED
         ../cpp/HybridHttpServer.cpp
