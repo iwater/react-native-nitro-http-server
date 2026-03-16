@@ -11,7 +11,7 @@ Pod::Spec.new do |s|
   s.authors      = package["author"]
   
   s.platform     = :ios, "13.0"
-  s.source       = { :git => "https://github.com/iwater/react-native-nitro-http-server.git", :tag => "v#{s.version}" }
+  s.source       = { :git => package["repository"]["url"].gsub("git+", ""), :tag => "v#{s.version}" }
   
   s.source_files = [
     "ios/**/*.{h,m,mm,swift}",
@@ -25,6 +25,24 @@ Pod::Spec.new do |s|
   
   # 动态库已自包含所有依赖，无需显式链接 C++ 运行时
   
+  s.prepare_command = <<-CMD
+    # npm pack automatically strips symlinks, which CocoaPods strictly requires for macOS frameworks.
+    # Recreate symlinks for Mac Catalyst to prevent mixed linkage errors.
+    MACABI_FRAMEWORK="ios/Frameworks/RNHttpServer.xcframework/ios-arm64_x86_64-maccatalyst/RNHttpServer.framework"
+    if [ -d "$MACABI_FRAMEWORK/Versions/A" ]; then
+      pushd "$MACABI_FRAMEWORK" > /dev/null
+      rm -rf Versions/Current Headers Resources RNHttpServer
+      pushd Versions > /dev/null
+      ln -s A Current
+      popd > /dev/null
+      ln -s Versions/Current/Headers Headers
+      ln -s Versions/Current/Resources Resources
+      ln -s Versions/Current/RNHttpServer RNHttpServer
+      rm -f Info.plist
+      popd > /dev/null
+    fi
+  CMD
+  
   s.pod_target_xcconfig = {
     "HEADER_SEARCH_PATHS" => [
       "\"$(PODS_ROOT)/react-native-nitro-modules/ios\"",
@@ -35,7 +53,8 @@ Pod::Spec.new do |s|
       "\"$(PODS_TARGET_SRCROOT)/nitrogen/generated/ios\"",
       "\"$(PODS_TARGET_SRCROOT)/cpp\"",
       "\"$(PODS_TARGET_SRCROOT)/ios/Frameworks/RNHttpServer.xcframework/ios-arm64/RNHttpServer.framework/Headers\"",
-      "\"$(PODS_TARGET_SRCROOT)/ios/Frameworks/RNHttpServer.xcframework/ios-arm64_x86_64-simulator/RNHttpServer.framework/Headers\""
+      "\"$(PODS_TARGET_SRCROOT)/ios/Frameworks/RNHttpServer.xcframework/ios-arm64_x86_64-simulator/RNHttpServer.framework/Headers\"",
+      "\"$(PODS_TARGET_SRCROOT)/ios/Frameworks/RNHttpServer.xcframework/ios-arm64_x86_64-maccatalyst/RNHttpServer.framework/Headers\""
     ],
     "OTHER_SWIFT_FLAGS" => "-cxx-interoperability-mode=default"
   }

@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-http-server",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "React Native HTTP Server with Nitro Modules",
   "repository": {
     "type": "git",
@@ -17,7 +17,7 @@
   "react-native": "src/index.ts",
   "scripts": {
     "one": "yarn copy-clib && yarn build && yarn pack",
-    "build": "npx nitrogen@0.32.0 && tsc",
+    "build": "npx nitrogen@0.35.0 && tsc",
     "prepare": "npm run build",
     "test": "echo \"Error: no test specified\" && exit 1",
     "copy-clib": "npm run copy-clib-android && npm run copy-clib-ios && npm run copy-clib-mac",
@@ -35,17 +35,16 @@
   "author": "",
   "license": "ISC",
   "peerDependencies": {
-    "react-native-nitro-modules": "^0.32.0"
+    "react-native-nitro-modules": "^0.35.0"
   },
   "dependencies": {
     "eventemitter3": "^5.0.1",
-    "react-native-nitro-buffer": "~0.0.14"
+    "react-native-nitro-buffer": ">=0.0.14"
   },
   "devDependencies": {
     "@types/events": "^3",
     "@types/node": "^24.10.1",
-    "nitrogen": "^0.32.0",
-    "react-native-nitro-modules": "^0.32.0",
+    "react-native-nitro-modules": "^0.35.0",
     "typescript": "^5.9.3"
   },
   "packageManager": "yarn@4.12.0",
