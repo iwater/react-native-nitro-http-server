@@ -14,7 +14,6 @@ Pod::Spec.new do |s|
   s.source       = { :git => package["repository"]["url"].gsub("git+", ""), :tag => "v#{s.version}" }
   
   s.source_files = [
-    "ios/**/*.{h,m,mm,swift}",
     "cpp/**/*.{hpp,cpp}"
   ]
   
@@ -31,14 +30,14 @@ Pod::Spec.new do |s|
     MACABI_FRAMEWORK="ios/Frameworks/RNHttpServer.xcframework/ios-arm64_x86_64-maccatalyst/RNHttpServer.framework"
     if [ -d "$MACABI_FRAMEWORK/Versions/A" ]; then
       pushd "$MACABI_FRAMEWORK" > /dev/null
-      rm -rf Versions/Current Headers Resources RNHttpServer
-      pushd Versions > /dev/null
-      ln -s A Current
-      popd > /dev/null
-      ln -s Versions/Current/Headers Headers
-      ln -s Versions/Current/Resources Resources
-      ln -s Versions/Current/RNHttpServer RNHttpServer
-      rm -f Info.plist
+      # Recreate standard macOS framework symlinks
+      ln -sf Versions/A/Headers Headers
+      ln -sf Versions/A/Resources Resources
+      ln -sf Versions/A/RNHttpServer RNHttpServer
+      # Ensure Info.plist is visible at root if CocoaPods validator expects it there
+      if [ -f "Resources/Info.plist" ]; then
+        ln -sf Resources/Info.plist Info.plist
+      fi
       popd > /dev/null
     fi
   CMD
