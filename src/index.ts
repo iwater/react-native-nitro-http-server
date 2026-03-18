@@ -54,16 +54,22 @@ const wrapHandler = (handler: RequestHandler): (request: HttpRequest) => Promise
 // 普通 HTTP 服务器
 export class HttpServer {
   private _isRunning = false
+  private _port = 0
 
-  async start(port: number, handler: RequestHandler, host?: string): Promise<boolean> {
+  async start(port: number, handler: RequestHandler, host?: string): Promise<number> {
     if (this._isRunning) {
       throw new Error('Server is already running')
     }
 
     const wrappedHandler = wrapHandler(handler)
-    const success = await HttpServerModule.start(port, wrappedHandler, host)
-    this._isRunning = success
-    return success
+    const actualPort = await HttpServerModule.start(port, wrappedHandler, host)
+    this._isRunning = actualPort > 0
+    this._port = actualPort
+    return actualPort
+  }
+
+  get port(): number {
+    return this._port
   }
 
   async stop(): Promise<void> {
@@ -85,15 +91,21 @@ export class HttpServer {
 // 静态文件服务器
 export class StaticServer {
   private _isRunning = false
+  private _port = 0
 
-  async start(port: number, rootDir: string, host?: string): Promise<boolean> {
+  async start(port: number, rootDir: string, host?: string): Promise<number> {
     if (this._isRunning) {
       throw new Error('Static server is already running')
     }
 
-    const success = await HttpServerModule.startStaticServer(port, rootDir, host)
-    this._isRunning = success
-    return success
+    const actualPort = await HttpServerModule.startStaticServer(port, rootDir, host)
+    this._isRunning = actualPort > 0
+    this._port = actualPort
+    return actualPort
+  }
+
+  get port(): number {
+    return this._port
   }
 
   async stop(): Promise<void> {
@@ -111,16 +123,22 @@ export class StaticServer {
 // App HTTP 服务器 (混合静态文件和回调)
 export class AppServer {
   private _isRunning = false
+  private _port = 0
 
-  async start(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<boolean> {
+  async start(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<number> {
     if (this._isRunning) {
       throw new Error('App server is already running')
     }
 
     const wrappedHandler = wrapHandler(handler)
-    const success = await HttpServerModule.startAppServer(port, rootDir, wrappedHandler, host)
-    this._isRunning = success
-    return success
+    const actualPort = await HttpServerModule.startAppServer(port, rootDir, wrappedHandler, host)
+    this._isRunning = actualPort > 0
+    this._port = actualPort
+    return actualPort
+  }
+
+  get port(): number {
+    return this._port
   }
 
   async stop(): Promise<void> {
@@ -148,8 +166,13 @@ export type WebSocketConnectionHandler = (ws: ServerWebSocket, request: WebSocke
 // 带配置的 App HTTP 服务器 (支持 WebDAV、Zip 挂载、WebSocket 等插件)
 export class ConfigServer {
   private _isRunning = false
+  private _port = 0
   private _wsEnabled = false
   private _wsHandlers: Map<string, WebSocketConnectionHandler> = new Map()
+
+  get port(): number {
+    return this._port
+  }
 
   /**
    * 注册 WebSocket 连接处理器
@@ -161,7 +184,7 @@ export class ConfigServer {
     return this
   }
 
-  async start(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<boolean> {
+  async start(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<number> {
     if (this._isRunning) {
       throw new Error('Config server is already running')
     }
@@ -176,15 +199,16 @@ export class ConfigServer {
 
     const wrappedHandler = wrapHandler(handler)
     const configJson = JSON.stringify(config)
-    const success = await HttpServerModule.startServerWithConfig(port, wrappedHandler, configJson, host)
-    this._isRunning = success
+    const actualPort = await HttpServerModule.startServerWithConfig(port, wrappedHandler, configJson, host)
+    this._isRunning = actualPort > 0
+    this._port = actualPort
 
     // 如果启动成功且有 WebSocket 配置，设置 WebSocket 处理器
-    if (success && this._wsEnabled) {
+    if (actualPort > 0 && this._wsEnabled) {
       this._setupWebSocketHandler()
     }
 
-    return success
+    return actualPort
   }
 
   private _setupWebSocketHandler(): void {

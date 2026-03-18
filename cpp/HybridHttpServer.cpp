@@ -315,13 +315,13 @@ HybridHttpServer::~HybridHttpServer() {
   }
 }
 
-std::shared_ptr<Promise<bool>> HybridHttpServer::start(
+std::shared_ptr<Promise<double>> HybridHttpServer::start(
     double port,
     const std::function<std::shared_ptr<Promise<
         std::variant<HttpResponse, std::shared_ptr<Promise<HttpResponse>>>>>(
         const HttpRequest &)> &handler,
     const std::optional<std::string> &host) {
-  return Promise<bool>::async([port, handler, host]() -> bool {
+  return Promise<double>::async([port, handler, host]() -> double {
     // 创建或更新全局上下文
     {
       std::lock_guard<std::mutex> lock(g_contextMutex);
@@ -334,9 +334,9 @@ std::shared_ptr<Promise<bool>> HybridHttpServer::start(
     // 启动服务器
     int portInt = static_cast<int>(port);
     const char *hostCStr = host.has_value() ? host.value().c_str() : nullptr;
-    bool success = start_server(portInt, hostCStr, c_request_callback);
+    int actualPort = start_server(portInt, hostCStr, c_request_callback);
 
-    return success;
+    return static_cast<double>(actualPort);
   });
 }
 
@@ -410,13 +410,14 @@ std::shared_ptr<Promise<bool>> HybridHttpServer::isRunning() {
   });
 }
 
-std::shared_ptr<Promise<bool>>
+std::shared_ptr<Promise<double>>
 HybridHttpServer::startStaticServer(double port, const std::string &rootDir,
                                     const std::optional<std::string> &host) {
-  return Promise<bool>::async([port, rootDir, host]() -> bool {
+  return Promise<double>::async([port, rootDir, host]() -> double {
     int portInt = static_cast<int>(port);
     const char *hostCStr = host.has_value() ? host.value().c_str() : nullptr;
-    return start_static_server(portInt, hostCStr, rootDir.c_str());
+    int actualPort = start_static_server(portInt, hostCStr, rootDir.c_str());
+    return static_cast<double>(actualPort);
   });
 }
 
@@ -424,13 +425,13 @@ std::shared_ptr<Promise<void>> HybridHttpServer::stopStaticServer() {
   return Promise<void>::async([]() { stop_static_server(); });
 }
 
-std::shared_ptr<Promise<bool>> HybridHttpServer::startAppServer(
+std::shared_ptr<Promise<double>> HybridHttpServer::startAppServer(
     double port, const std::string &rootDir,
     const std::function<std::shared_ptr<Promise<
         std::variant<HttpResponse, std::shared_ptr<Promise<HttpResponse>>>>>(
         const HttpRequest &)> &handler,
     const std::optional<std::string> &host) {
-  return Promise<bool>::async([port, rootDir, handler, host]() -> bool {
+  return Promise<double>::async([port, rootDir, handler, host]() -> double {
     // Create or update global context
     {
       std::lock_guard<std::mutex> lock(g_contextMutex);
@@ -444,10 +445,10 @@ std::shared_ptr<Promise<bool>> HybridHttpServer::startAppServer(
     int portInt = static_cast<int>(port);
     const char *hostCStr = host.has_value() ? host.value().c_str() : nullptr;
     // Using "start_app_server" from C library
-    bool success = start_app_server(portInt, hostCStr, rootDir.c_str(),
-                                    c_request_callback);
+    int actualPort = start_app_server(portInt, hostCStr, rootDir.c_str(),
+                                      c_request_callback);
 
-    return success;
+    return static_cast<double>(actualPort);
   });
 }
 
@@ -463,13 +464,13 @@ std::shared_ptr<Promise<void>> HybridHttpServer::stopAppServer() {
   });
 }
 
-std::shared_ptr<Promise<bool>> HybridHttpServer::startServerWithConfig(
+std::shared_ptr<Promise<double>> HybridHttpServer::startServerWithConfig(
     double port,
     const std::function<std::shared_ptr<Promise<
         std::variant<HttpResponse, std::shared_ptr<Promise<HttpResponse>>>>>(
         const HttpRequest &)> &handler,
     const std::string &configJson, const std::optional<std::string> &host) {
-  return Promise<bool>::async([port, handler, configJson, host]() -> bool {
+  return Promise<double>::async([port, handler, configJson, host]() -> double {
     // Create or update global context
     {
       std::lock_guard<std::mutex> lock(g_contextMutex);
@@ -482,10 +483,10 @@ std::shared_ptr<Promise<bool>> HybridHttpServer::startServerWithConfig(
     // Start server with config
     int portInt = static_cast<int>(port);
     const char *hostCStr = host.has_value() ? host.value().c_str() : nullptr;
-    bool success = start_server_with_config(
+    int actualPort = start_server_with_config(
         portInt, hostCStr, c_request_callback, configJson.c_str());
 
-    return success;
+    return static_cast<double>(actualPort);
   });
 }
 

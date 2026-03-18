@@ -52,8 +52,8 @@ import { HttpServer } from 'react-native-nitro-http-server';
 
 const server = new HttpServer();
 
-// Start server
-await server.start(8080, async (request) => {
+// Start server (returns the actual port, e.g., 8080)
+const actualPort = await server.start(8080, async (request) => {
   console.log(`Received request: ${request.method} ${request.path}`);
   
   return {
@@ -68,7 +68,14 @@ await server.start(8080, async (request) => {
   };
 });
 
-console.log('Server running at http://localhost:8080');
+console.log(`Server running at http://localhost:${actualPort}`);
+
+// Pass 0 to automatically allocate a random free port
+const randomPort = await server.start(0, handler);
+console.log(`Server started on random port: ${randomPort}`);
+
+// Get current port
+console.log('Current port:', server.port);
 
 // Stop server
 // await server.stop();
@@ -338,25 +345,31 @@ server.listen(8080, () => {
 
 The basic HTTP server class for handling dynamic requests.
 
-#### `start(port: number, handler: RequestHandler): Promise<boolean>`
+#### `start(port: number, handler: RequestHandler, host?: string): Promise<number>`
 
 Starts the HTTP server.
 
 **Parameters**:
-- `port`: Port number (1024-65535)
+- `port`: Port number (1024-65535). Pass `0` to automatically allocate a random free port.
 - `handler`: Request handler function, receives `HttpRequest` and returns `HttpResponse`
+- `host`: (Optional) IP address to bind to, defaults to `127.0.0.1`
 
-**Returns**: `true` if started successfully.
+**Returns**: The actual listening port number. returns `0` if failed.
 
 **Example**:
 ```typescript
-const success = await server.start(8080, async (request) => {
+const actualPort = await server.start(0, async (request) => {
   return {
     statusCode: 200,
     body: 'Hello World',
   };
 });
+console.log(`Server started on port: ${actualPort}`);
 ```
+
+#### `port: number` (Getter)
+
+Returns the current listening port. Returns `0` if the server is not running.
 
 #### `stop(): Promise<void>`
 
@@ -371,16 +384,16 @@ await server.stop();
 
 The static file server class.
 
-#### `start(port: number, rootDir: string, host?: string): Promise<boolean>`
+#### `start(port: number, rootDir: string, host?: string): Promise<number>`
 
 Starts the static file server.
 
 **Parameters**:
-- `port`: Port number
+- `port`: Port number. Pass `0` for random port.
 - `rootDir`: Absolute path to the static file root directory
 - `host`: (Optional) IP address to bind to, defaults to `127.0.0.1`
 
-**Returns**: `true` if started successfully.
+**Returns**: The actual listening port number. returns `0` if failed.
 
 **Example**:
 ```typescript
@@ -406,7 +419,7 @@ Checks if the static server is running.
 
 The app server class (hybrid mode) for both static files and dynamic requests.
 
-#### `start(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<boolean>`
+#### `start(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<number>`
 
 Starts the app server (hybrid mode). The server will first attempt to find the corresponding static file in `rootDir`. If found and the method is GET, it returns the file content directly. Otherwise, it forwards the request to the `handler`.
 
@@ -459,7 +472,7 @@ Stops the app server.
 
 Server with plugin configuration support (WebDAV, Zip mounting, etc.).
 
-#### `start(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<boolean>`
+#### `start(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<number>`
 
 Starts the config server with plugin configuration.
 
@@ -747,6 +760,13 @@ curl http://localhost:8080/api/test
 ```
 
 ## 📝 Changelog
+
+### 1.8.0 (2026-03-18)
+
+- ✨ Support **random port allocation** by passing `0` as the port number.
+- 🔄 Enhanced all server `start` methods to return the **actual listening port** (number) instead of a boolean.
+- 🏗️ Added `port` property to all server classes to retrieve the current listening port.
+- 🛡️ Improved Rust core stability by preventing panics during port binding and ensuring compatibility with Tokio runtime in multi-threaded environments.
 
 ### 1.0.0 (2025-12-08)
 

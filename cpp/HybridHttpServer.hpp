@@ -11,7 +11,7 @@ public:
   ~HybridHttpServer() override;
 
   // 实现 HybridHttpServerSpec 接口
-  std::shared_ptr<Promise<bool>> start(
+  std::shared_ptr<Promise<double>> start(
       double port,
       const std::function<std::shared_ptr<Promise<
           std::variant<HttpResponse, std::shared_ptr<Promise<HttpResponse>>>>>(
@@ -29,14 +29,14 @@ public:
   std::shared_ptr<Promise<bool>> isRunning() override;
 
   // 静态服务器方法
-  std::shared_ptr<Promise<bool>>
+  std::shared_ptr<Promise<double>>
   startStaticServer(double port, const std::string &rootDir,
                     const std::optional<std::string> &host) override;
 
   std::shared_ptr<Promise<void>> stopStaticServer() override;
 
   // App server methods
-  std::shared_ptr<Promise<bool>> startAppServer(
+  std::shared_ptr<Promise<double>> startAppServer(
       double port, const std::string &rootDir,
       const std::function<std::shared_ptr<Promise<
           std::variant<HttpResponse, std::shared_ptr<Promise<HttpResponse>>>>>(
@@ -46,7 +46,7 @@ public:
   std::shared_ptr<Promise<void>> stopAppServer() override;
 
   // 带配置的 App server 方法
-  std::shared_ptr<Promise<bool>> startServerWithConfig(
+  std::shared_ptr<Promise<double>> startServerWithConfig(
       double port,
       const std::function<std::shared_ptr<Promise<
           std::variant<HttpResponse, std::shared_ptr<Promise<HttpResponse>>>>>(

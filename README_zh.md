@@ -48,8 +48,8 @@ import { HttpServer } from 'react-native-nitro-http-server';
 
 const server = new HttpServer();
 
-// 启动服务器
-await server.start(8080, async (request) => {
+// 启动服务器（返回实际端口号，例如 8080）
+const actualPort = await server.start(8080, async (request) => {
   console.log(`收到请求: ${request.method} ${request.path}`);
   
   return {
@@ -64,7 +64,14 @@ await server.start(8080, async (request) => {
   };
 });
 
-console.log('服务器运行在 http://localhost:8080');
+console.log(`服务器运行在 http://localhost:${actualPort}`);
+
+// 传入 0 可以自动分配一个随机空闲端口
+const randomPort = await server.start(0, handler);
+console.log(`服务器启动在随机端口: ${randomPort}`);
+
+// 获取当前端口
+console.log('当前端口:', server.port);
 
 // 停止服务器
 // await server.stop();
@@ -334,30 +341,32 @@ server.listen(8080, () => {
 
 基础 HTTP 服务器类，用于处理动态请求。
 
-#### `start(port: number, handler: RequestHandler, host?: string): Promise<boolean>`
+#### `start(port: number, handler: RequestHandler, host?: string): Promise<number>`
 
 启动 HTTP 服务器。
 
 **参数**:
-- `port`: 端口号（1024-65535）
+- `port`: 端口号（1024-65535）。传入 `0` 将自动分配一个随机空闲端口。
 - `handler`: 请求处理函数,接收 `HttpRequest` 并返回 `HttpResponse`
 - `host`: (可选) 监听的IP地址,默认为 `127.0.0.1`。传入 `0.0.0.0` 可允许外部访问
 
-**返回**: 如果启动成功返回 `true`
+**返回**: 实际监听的端口号。如果启动失败返回 `0`
 
 **示例**:
 ```typescript
-// 仅本地访问(默认)
-const success = await server.start(8080, async (request) => {
+// 自动分配端口
+const actualPort = await server.start(0, async (request) => {
   return {
     statusCode: 200,
     body: 'Hello World',
   };
 });
-
-// 允许外部访问
-await server.start(8080, handler, '0.0.0.0');
+console.log(`服务器启动在端口: ${actualPort}`);
 ```
+
+#### `port: number` (Getter)
+
+返回当前正在监听的端口号。如果服务器未运行，返回 `0`。
 
 #### `stop(): Promise<void>`
 
@@ -372,16 +381,16 @@ await server.stop();
 
 静态文件服务器类。
 
-#### `start(port: number, rootDir: string, host?: string): Promise<boolean>`
+#### `start(port: number, rootDir: string, host?: string): Promise<number>`
 
-启动静态文件服务器。
+启动静态 file 服务器。
 
 **参数**:
-- `port`: 端口号
+- `port`: 端口号。传入 `0` 为随机端口。
 - `rootDir`: 静态文件根目录的绝对路径
-- `host`: (可选) 监听的IP地址,默认为 `127.0.0.1`。传入 `0.0.0.0` 可允许外部访问
+- `host`: (可选) 监听的IP地址,默认为 `127.0.0.1`
 
-**返回**: 如果启动成功返回 `true`
+**返回**: 实际监听的端口号。如果启动失败返回 `0`
 
 **示例**:
 ```typescript
@@ -408,7 +417,7 @@ const success = await server.start(
 
 应用服务器类（混合模式），同时支持静态文件和动态请求。
 
-#### `start(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<boolean>`
+#### `start(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<number>`
 
 启动应用服务器（混合模式）。服务器会首先尝试在 `rootDir` 中查找对应的静态文件。如果找到且方法为 GET,则直接返回文件内容。否则,将请求转发给 `handler` 处理。
 
@@ -459,7 +468,7 @@ interface HttpResponse {
 
 带插件配置支持的服务器类（WebDAV、Zip 挂载等）。
 
-#### `start(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<boolean>`
+#### `start(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<number>`
 
 启动带插件配置的服务器。
 
@@ -731,6 +740,13 @@ curl http://localhost:8080/api/test
 ```
 
 ## 📝 更新日志
+
+### 1.8.0 (2026-03-18)
+
+- ✨ 支持通过传入端口号 `0` 来实现 **随机端口分配**。
+- 🔄 增强了所有服务器的 `start` 方法，现在返回 **实际监听的端口号** (number) 而非布尔值。
+- 🏗️ 为所有服务器类添加了 `port` 属性，用于获取当前运行的端口。
+- 🛡️ 提升了 Rust 核心的稳定性，通过优雅处理端口绑定错误并确保在多线程环境下的 Tokio Runtime 兼容性，防止崩溃。
 
 ### 1.0.0 (2025-12-08)
 

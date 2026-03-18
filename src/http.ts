@@ -635,8 +635,9 @@ export class Server extends EventEmitter {
 
         // Start the native server with our request handler
         this._nativeServer.start(port, this._handleNativeRequest.bind(this), hostname)
-            .then((success) => {
-                if (success) {
+            .then((actualPort) => {
+                if (actualPort > 0) {
+                    this._port = actualPort;
                     this.listening = true;
                     this.emit('listening');
                     if (cb) cb();
