@@ -132,9 +132,9 @@ export interface HttpServer extends HybridObject<{
      * @param port 端口号
      * @param handler 请求处理器
      * @param host 监听的IP地址,默认为 127.0.0.1
-     * @returns 是否启动成功
+     * @returns 实际监听的端口号（0表示失败）
      */
-    start(port: number, handler: RequestHandler, host?: string): Promise<boolean>
+    start(port: number, handler: RequestHandler, host?: string): Promise<number>
 
     /**
      * 发送 HTTP 响应
@@ -166,9 +166,9 @@ export interface HttpServer extends HybridObject<{
      * @param port 端口号
      * @param rootDir 静态文件根目录路径
      * @param host 监听的IP地址,默认为 127.0.0.1
-     * @returns 是否启动成功
+     * @returns 实际监听的端口号（0表示失败）
      */
-    startStaticServer(port: number, rootDir: string, host?: string): Promise<boolean>
+    startStaticServer(port: number, rootDir: string, host?: string): Promise<number>
 
     /**
      * 停止静态文件服务器
@@ -216,9 +216,9 @@ export interface HttpServer extends HybridObject<{
      * @param rootDir 静态文件根目录路径
      * @param handler 请求处理器
      * @param host 监听的IP地址,默认为 127.0.0.1
-     * @returns 是否启动成功
+     * @returns 实际监听的端口号（0表示失败）
      */
-    startAppServer(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<boolean>
+    startAppServer(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<number>
 
     /**
      * 停止App HTTP服务器
@@ -231,9 +231,9 @@ export interface HttpServer extends HybridObject<{
      * @param handler 请求处理器
      * @param configJson 插件配置 JSON 字符串（可包含 root_dir 指定静态文件根目录）
      * @param host 监听的IP地址,默认为 127.0.0.1
-     * @returns 是否启动成功
+     * @returns 实际监听的端口号（0表示失败）
      */
-    startServerWithConfig(port: number, handler: RequestHandler, configJson: string, host?: string): Promise<boolean>
+    startServerWithConfig(port: number, handler: RequestHandler, configJson: string, host?: string): Promise<number>
 
     // ==================== WebSocket API ====================
 
