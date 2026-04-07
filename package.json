@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-http-server",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "React Native HTTP Server with Nitro Modules",
   "repository": {
     "type": "git",
@@ -23,7 +23,8 @@
     "copy-clib": "npm run copy-clib-android && npm run copy-clib-ios && npm run copy-clib-mac",
     "copy-clib-android": "mkdir -p android/libs/arm64-v8a android/libs/armeabi-v7a android/libs/x86 android/libs/x86_64 && cp ../rust_c_lib/target/universal/android/arm64-v8a/librn_http_server.so android/libs/arm64-v8a/ && cp ../rust_c_lib/target/universal/android/armeabi-v7a/librn_http_server.so android/libs/armeabi-v7a/ && cp ../rust_c_lib/target/universal/android/x86/librn_http_server.so android/libs/x86/ && cp ../rust_c_lib/target/universal/android/x86_64/librn_http_server.so android/libs/x86_64/ && cp ../rust_c_lib/include/rn_http_server.h cpp/",
     "copy-clib-ios": "rm -rf ios/Frameworks/RNHttpServer.xcframework && cp -R ../rust_c_lib/target/xcframework/RNHttpServer.xcframework ios/Frameworks/",
-    "copy-clib-mac": "mkdir -p mac && cp ../rust_c_lib/target/release/librn_http_server.a mac/ && cp ../rust_c_lib/include/rn_http_server.h cpp/"
+    "copy-clib-mac": "mkdir -p mac && cp ../rust_c_lib/target/release/librn_http_server.a mac/ && cp ../rust_c_lib/include/rn_http_server.h cpp/",
+    "postinstall": "node scripts/fix-symlinks.js"
   },
   "keywords": [
     "react-native",
@@ -56,6 +57,7 @@
     "android/",
     "nitrogen/",
     "polyfills/",
+    "scripts/",
     "*.podspec"
   ]
 }
