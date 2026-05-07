@@ -5,9 +5,21 @@
 #include <unordered_map>
 #include <vector>
 
+// 用于 TCP 探测的 socket 头文件
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+
 extern "C" {
 #include "rn_http_server.h"
 }
+
+#ifdef __APPLE__
+#include "RNHttpServerBackgroundTask.h"
+#endif
 
 namespace margelo::nitro::http_server {
 
@@ -26,6 +38,83 @@ struct ServerContext {
 
 static ServerContext *g_serverContext = nullptr;
 static std::mutex g_contextMutex;
+
+// ==================== iOS 后台任务管理 ====================
+static bool g_serverRunning = false;
+static int g_serverPort = 0;
+static bool g_lifecycleRegistered = false;
+
+// 通过 TCP connect 探测服务器是否真的在监听
+static bool probe_server_alive(int port) {
+  if (port <= 0) return false;
+
+  int sock = socket(AF_INET, SOCK_STREAM, 0);
+  if (sock < 0) return false;
+
+  // 设为非阻塞，配合超时控制
+  fcntl(sock, F_SETFL, O_NONBLOCK);
+
+  struct sockaddr_in addr;
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(static_cast<uint16_t>(port));
+  inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+  int ret = connect(sock, reinterpret_cast<struct sockaddr *>(&addr),
+                    sizeof(addr));
+
+  bool alive = false;
+  if (ret == 0) {
+    // 立即连接成功（几乎不可能，但处理一下）
+    alive = true;
+  } else if (errno == EINPROGRESS) {
+    // 非阻塞 connect 正常路径：用 select 等 200ms
+    fd_set fdset;
+    FD_ZERO(&fdset);
+    FD_SET(sock, &fdset);
+
+    struct timeval tv;
+    tv.tv_sec = 0;
+    tv.tv_usec = 200000; // 200ms 超时
+
+    ret = select(sock + 1, nullptr, &fdset, nullptr, &tv);
+    if (ret > 0) {
+      // socket 可写，检查是否有错误
+      int error = 0;
+      socklen_t len = sizeof(error);
+      getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &len);
+      alive = (error == 0);
+    }
+    // ret == 0: 超时，服务器未响应 → alive = false
+    // ret < 0: select 出错 → alive = false
+  }
+  // errno != EINPROGRESS: 连接立即失败（如 ECONNREFUSED） → alive = false
+
+  close(sock);
+  return alive;
+}
+
+#ifdef __APPLE__
+static void on_ios_enter_background() {
+  // beginBackgroundTask 已在 RNHttpServerBackgroundTask.mm 中自动启动
+}
+
+static void on_ios_enter_foreground() {
+  // App 回到前台，用 TCP 探测决定服务器是否还活着，不盲目标记死亡
+  // isRunning() 内部会调用 probe_server_alive()
+}
+#endif
+
+static void register_lifecycle_callbacks_if_needed() {
+#ifdef __APPLE__
+  if (!g_lifecycleRegistered) {
+    rn_http_register_lifecycle_callbacks(
+        on_ios_enter_background,
+        on_ios_enter_foreground
+    );
+    g_lifecycleRegistered = true;
+  }
+#endif
+}
 
 // 辅助函数：序列化 headers 为 JSON 字符串
 static std::string serializeHeaders(
@@ -331,10 +420,18 @@ std::shared_ptr<Promise<double>> HybridHttpServer::start(
       g_serverContext->handler = handler;
     }
 
+    // 注册前后台生命周期回调（首次调用时）
+    register_lifecycle_callbacks_if_needed();
+
     // 启动服务器
     int portInt = static_cast<int>(port);
     const char *hostCStr = host.has_value() ? host.value().c_str() : nullptr;
     int actualPort = start_server(portInt, hostCStr, c_request_callback);
+
+    if (actualPort > 0) {
+      g_serverRunning = true;
+      g_serverPort = actualPort;
+    }
 
     return static_cast<double>(actualPort);
   });
@@ -376,6 +473,9 @@ std::shared_ptr<Promise<void>> HybridHttpServer::stop() {
   return Promise<void>::async([]() {
     stop_server();
 
+    g_serverRunning = false;
+    g_serverPort = 0;
+
     // 清理回调
     std::lock_guard<std::mutex> lock(g_contextMutex);
     if (g_serverContext) {
@@ -404,9 +504,10 @@ std::shared_ptr<Promise<ServerStats>> HybridHttpServer::getStats() {
 
 std::shared_ptr<Promise<bool>> HybridHttpServer::isRunning() {
   return Promise<bool>::async([]() -> bool {
-    // 简单实现：检查全局上下文是否存在且有回调
-    std::lock_guard<std::mutex> lock(g_contextMutex);
-    return g_serverContext != nullptr && g_serverContext->handler != nullptr;
+    // 快速路径：标记为 false，无需探测
+    if (!g_serverRunning) return false;
+    // TCP connect 探测 socket 是否真的在监听
+    return probe_server_alive(g_serverPort);
   });
 }
 
@@ -416,13 +517,26 @@ HybridHttpServer::startStaticServer(double port, const std::string &rootDir,
   return Promise<double>::async([port, rootDir, host]() -> double {
     int portInt = static_cast<int>(port);
     const char *hostCStr = host.has_value() ? host.value().c_str() : nullptr;
+
+    register_lifecycle_callbacks_if_needed();
+
     int actualPort = start_static_server(portInt, hostCStr, rootDir.c_str());
+
+    if (actualPort > 0) {
+      g_serverRunning = true;
+      g_serverPort = actualPort;
+    }
+
     return static_cast<double>(actualPort);
   });
 }
 
 std::shared_ptr<Promise<void>> HybridHttpServer::stopStaticServer() {
-  return Promise<void>::async([]() { stop_static_server(); });
+  return Promise<void>::async([]() {
+    stop_static_server();
+    g_serverRunning = false;
+    g_serverPort = 0;
+  });
 }
 
 std::shared_ptr<Promise<double>> HybridHttpServer::startAppServer(
@@ -441,12 +555,19 @@ std::shared_ptr<Promise<double>> HybridHttpServer::startAppServer(
       g_serverContext->handler = handler;
     }
 
+    register_lifecycle_callbacks_if_needed();
+
     // Start server
     int portInt = static_cast<int>(port);
     const char *hostCStr = host.has_value() ? host.value().c_str() : nullptr;
     // Using "start_app_server" from C library
     int actualPort = start_app_server(portInt, hostCStr, rootDir.c_str(),
                                       c_request_callback);
+
+    if (actualPort > 0) {
+      g_serverRunning = true;
+      g_serverPort = actualPort;
+    }
 
     return static_cast<double>(actualPort);
   });
@@ -455,6 +576,8 @@ std::shared_ptr<Promise<double>> HybridHttpServer::startAppServer(
 std::shared_ptr<Promise<void>> HybridHttpServer::stopAppServer() {
   return Promise<void>::async([]() {
     stop_app_server();
+    g_serverRunning = false;
+    g_serverPort = 0;
 
     // Clean up callback
     std::lock_guard<std::mutex> lock(g_contextMutex);
@@ -483,8 +606,16 @@ std::shared_ptr<Promise<double>> HybridHttpServer::startServerWithConfig(
     // Start server with config
     int portInt = static_cast<int>(port);
     const char *hostCStr = host.has_value() ? host.value().c_str() : nullptr;
+
+    register_lifecycle_callbacks_if_needed();
+
     int actualPort = start_server_with_config(
         portInt, hostCStr, c_request_callback, configJson.c_str());
+
+    if (actualPort > 0) {
+      g_serverRunning = true;
+      g_serverPort = actualPort;
+    }
 
     return static_cast<double>(actualPort);
   });

@@ -14,7 +14,7 @@ Pod::Spec.new do |s|
   s.source       = { :git => package["repository"]["url"].gsub("git+", ""), :tag => "v#{s.version}" }
   
   s.source_files = [
-    "cpp/**/*.{hpp,cpp}"
+    "cpp/**/*.{hpp,cpp,h,mm}"
   ]
   
   s.dependency "React-Core"

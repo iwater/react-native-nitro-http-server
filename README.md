@@ -345,14 +345,14 @@ server.listen(8080, () => {
 
 The basic HTTP server class for handling dynamic requests.
 
-#### `start(port: number, handler: RequestHandler, host?: string): Promise<number>`
+#### `start(port: number, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<number>`
 
 Starts the HTTP server.
 
 **Parameters**:
 - `port`: Port number (1024-65535). Pass `0` to automatically allocate a random free port.
 - `handler`: Request handler function, receives `HttpRequest` and returns `HttpResponse`
-- `host`: (Optional) IP address to bind to, defaults to `127.0.0.1`
+- `hostOrOptions`: (Optional) IP address string (e.g. `'0.0.0.0'`), or `ServerOptions` configuration object
 
 **Returns**: The actual listening port number. returns `0` if failed.
 
@@ -380,18 +380,47 @@ Stops the HTTP server.
 await server.stop();
 ```
 
+#### `isRunning(): Promise<boolean>`
+
+Checks if the HTTP server is running. Uses a TCP connect probe (200ms timeout) to detect the real socket state, rather than relying on an in-memory flag.
+
+**Example**:
+```typescript
+const alive = await server.isRunning();
+```
+
+#### Auto-restart after background suspension
+
+iOS suspends the app ~30s after screen lock, which tears down all TCP sockets. Enable `autoRestart` to let the library automatically detect and restart the server when the app returns to foreground — no extra code needed in your app.
+
+```typescript
+// Option 1: Using ServerOptions
+await server.start(8080, handler, { autoRestart: true });
+
+// Option 2: Set host and autoRestart together
+await server.start(8080, handler, {
+  host: '0.0.0.0',
+  autoRestart: true,
+});
+
+// Option 3: Legacy host string (no autoRestart)
+await server.start(8080, handler, '0.0.0.0');
+```
+
+> **How it works**: On entering background, a `beginBackgroundTask` request buys extra execution time (~30s–3min). On returning to foreground, a TCP connect probe checks if the socket is still alive — if alive, nothing happens; if dead, the server is cleaned up and restarted automatically.
+
 ### StaticServer
 
 The static file server class.
 
-#### `start(port: number, rootDir: string, host?: string): Promise<number>`
+#### `start(port: number, rootDir: string, hostOrOptions?: string | ServerOptions): Promise<number>`
 
 Starts the static file server.
 
 **Parameters**:
 - `port`: Port number. Pass `0` for random port.
 - `rootDir`: Absolute path to the static file root directory
-- `host`: (Optional) IP address to bind to, defaults to `127.0.0.1`
+- `hostOrOptions`: (Optional) IP address string, or `ServerOptions` configuration object
 
 **Returns**: The actual listening port number. returns `0` if failed.
 
@@ -411,15 +440,15 @@ const success = await server.start(
 
 Stops the static file server.
 
-#### `isRunning(): boolean`
+#### `isRunning(): Promise<boolean>`
 
-Checks if the static server is running.
+Checks if the static server is running. Uses a TCP connect probe to detect real socket state.
 
 ### AppServer
 
 The app server class (hybrid mode) for both static files and dynamic requests.
 
-#### `start(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<number>`
+#### `start(port: number, rootDir: string, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<number>`
 
 Starts the app server (hybrid mode). The server will first attempt to find the corresponding static file in `rootDir`. If found and the method is GET, it returns the file content directly. Otherwise, it forwards the request to the `handler`.
 
@@ -427,15 +456,15 @@ Starts the app server (hybrid mode). The server will first attempt to find the c
 - `port`: Port number
 - `rootDir`: Static file root directory
 - `handler`: Request handler
-- `host`: (Optional) IP address to bind to, defaults to `127.0.0.1`
+- `hostOrOptions`: (Optional) IP address string, or `ServerOptions` configuration object
 
 #### `stop(): Promise<void>`
 
 Stops the app server.
 
-#### `isRunning(): boolean`
+#### `isRunning(): Promise<boolean>`
 
-Checks if the app server is running.
+Checks if the app server is running. Uses a TCP connect probe to detect real socket state.
 
 
 
@@ -472,7 +501,7 @@ Stops the app server.
 
 Server with plugin configuration support (WebDAV, Zip mounting, etc.).
 
-#### `start(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<number>`
+#### `start(port: number, handler: RequestHandler, config: ServerConfig, hostOrOptions?: string | ServerOptions): Promise<number>`
 
 Starts the config server with plugin configuration.
 
@@ -480,7 +509,7 @@ Starts the config server with plugin configuration.
 - `port`: Port number
 - `handler`: Request handler
 - `config`: Plugin configuration object (includes `root_dir`)
-- `host`: (Optional) IP address to bind to, defaults to `127.0.0.1`
+- `hostOrOptions`: (Optional) IP address string, or `ServerOptions` configuration object
 
 **Example**:
 ```typescript
@@ -501,32 +530,32 @@ const config = {
 };
 
 const server = new ConfigServer();
-await server.start(8080, handler, config, '0.0.0.0');
+await server.start(8080, handler, config, { host: '0.0.0.0' });
 ```
 
 #### `stop(): Promise<void>`
 
 Stops the config server.
 
-#### `isRunning(): boolean`
+#### `isRunning(): Promise<boolean>`
 
-Checks if the config server is running.
+Checks if the config server is running. Uses a TCP connect probe to detect real socket state.
 
 ### Helper Functions
 
-#### `createHttpServer(port: number, handler: RequestHandler, host?: string): Promise<HttpServer>`
+#### `createHttpServer(port: number, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<HttpServer>`
 
 Creates and starts a basic HTTP server.
 
-#### `createStaticServer(port: number, rootDir: string, host?: string): Promise<StaticServer>`
+#### `createStaticServer(port: number, rootDir: string, hostOrOptions?: string | ServerOptions): Promise<StaticServer>`
 
 Creates and starts a static file server.
 
-#### `createAppServer(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<AppServer>`
+#### `createAppServer(port: number, rootDir: string, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<AppServer>`
 
 Creates and starts an app server (hybrid mode).
 
-#### `createConfigServer(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<ConfigServer>`
+#### `createConfigServer(port: number, handler: RequestHandler, config: ServerConfig, hostOrOptions?: string | ServerOptions): Promise<ConfigServer>`
 
 Creates and starts a config server with plugin configuration.
 
@@ -552,6 +581,20 @@ interface HttpResponse {
   statusCode: number;     // HTTP Status Code (200, 404, 500, etc.)
   headers?: Record<string, string>;  // Response headers (optional)
   body?: string | ArrayBuffer;       // Response body (string or ArrayBuffer)
+}
+```
+
+#### ServerOptions
+
+```typescript
+interface ServerOptions {
+  /** IP address to bind to, defaults to 127.0.0.1 */
+  host?: string
+  /**
+   * Automatically detect and restart the server after iOS background suspension.
+   * Defaults to false. Set to true to enable zero-config auto-recovery.
+   */
+  autoRestart?: boolean
 }
 ```
 
@@ -760,6 +803,13 @@ curl http://localhost:8080/api/test
 ```
 
 ## 📝 Changelog
+
+### 1.9.0
+
+- 🔄 `start()` methods now accept `ServerOptions` config object (backward-compatible with legacy `host` string)
+- 🔁 Added `autoRestart` option: automatically detect and restart server after iOS background suspension
+- 🔍 `isRunning()` is now async — uses a TCP connect probe to detect real socket state
+- 🛡️ iOS background task: requests extra execution time on entering background
 
 ### 1.8.0 (2026-03-18)
 

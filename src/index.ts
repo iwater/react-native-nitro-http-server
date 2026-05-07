@@ -1,4 +1,5 @@
 import { NitroModules } from 'react-native-nitro-modules'
+import { AppState, AppStateStatus } from 'react-native'
 import type { HttpServer as NitroHttpServer, HttpRequest, HttpResponse as NitroHttpResponse, ServerConfig } from './HttpServer.nitro'
 import { createServer } from './http'
 
@@ -9,6 +10,25 @@ export interface HttpResponse extends Omit<NitroHttpResponse, 'body' | 'binaryBo
 
 // Redefine RequestHandler to use local HttpResponse
 export type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResponse
+
+// 启动选项
+export interface ServerOptions {
+  /** 监听的 IP 地址，默认 127.0.0.1 */
+  host?: string
+  /**
+   * 锁屏/切换App后回到前台时，自动检测并重启被系统挂起的服务。
+   * 默认 false，设为 true 后无需在 App 中添加额外代码。
+   */
+  autoRestart?: boolean
+}
+
+// 兼容旧版 api：将 host 字符串或 options 对象统一为 ServerOptions
+function normalizeOptions(hostOrOptions?: string | ServerOptions): ServerOptions {
+  if (typeof hostOrOptions === 'string') {
+    return { host: hostOrOptions }
+  }
+  return hostOrOptions || {}
+}
 
 // 创建 HybridObject 实例
 const HttpServerModule = NitroModules.createHybridObject<NitroHttpServer>("HttpServer")
@@ -55,16 +75,30 @@ const wrapHandler = (handler: RequestHandler): (request: HttpRequest) => Promise
 export class HttpServer {
   private _isRunning = false
   private _port = 0
+  private _handler: RequestHandler | null = null
+  private _options: ServerOptions = {}
+  private _appStateSub: { remove: () => void } | null = null
+  private _intentionallyStopped = false
 
-  async start(port: number, handler: RequestHandler, host?: string): Promise<number> {
+  async start(port: number, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<number> {
     if (this._isRunning) {
       throw new Error('Server is already running')
     }
 
+    this._options = normalizeOptions(hostOrOptions)
+    this._handler = handler
+    this._intentionallyStopped = false
+
     const wrappedHandler = wrapHandler(handler)
+    const host = this._options.host
     const actualPort = await HttpServerModule.start(port, wrappedHandler, host)
     this._isRunning = actualPort > 0
     this._port = actualPort
+
+    if (this._options.autoRestart) {
+      this._registerAutoRestart()
+    }
+
     return actualPort
   }
 
@@ -73,6 +107,9 @@ export class HttpServer {
   }
 
   async stop(): Promise<void> {
+    this._intentionallyStopped = true
+    this._unregisterAutoRestart()
+
     if (!this._isRunning) return
 
     await HttpServerModule.stop()
@@ -83,8 +120,49 @@ export class HttpServer {
     return await HttpServerModule.getStats()
   }
 
-  isRunning(): boolean {
-    return this._isRunning
+  async isRunning(): Promise<boolean> {
+    // 调用原生层的 isRunning()，内部会用 TCP connect 探测 socket 是否真的存活
+    const nativeRunning = await HttpServerModule.isRunning()
+    this._isRunning = nativeRunning
+    return nativeRunning
+  }
+
+  private _registerAutoRestart(): void {
+    if (this._appStateSub) return
+
+    this._appStateSub = AppState.addEventListener('change', async (state: AppStateStatus) => {
+      if (state !== 'active') return
+      if (this._intentionallyStopped) return
+
+      const alive = await this.isRunning()
+      if (!alive && this._handler) {
+        console.log('[HttpServer] Detected server is dead, auto-restarting...')
+        try {
+          // 清理可能的残留状态
+          await HttpServerModule.stop()
+        } catch (_) { /* ignore */ }
+
+        try {
+          const wrappedHandler = wrapHandler(this._handler)
+          const host = this._options.host
+          const actualPort = await HttpServerModule.start(this._port, wrappedHandler, host)
+          if (actualPort > 0) {
+            this._isRunning = true
+            this._port = actualPort
+            console.log(`[HttpServer] Auto-restarted on port ${actualPort}`)
+          }
+        } catch (e) {
+          console.error('[HttpServer] Auto-restart failed:', e)
+        }
+      }
+    })
+  }
+
+  private _unregisterAutoRestart(): void {
+    if (this._appStateSub) {
+      this._appStateSub.remove()
+      this._appStateSub = null
+    }
   }
 }
 
@@ -92,15 +170,29 @@ export class HttpServer {
 export class StaticServer {
   private _isRunning = false
   private _port = 0
+  private _rootDir = ''
+  private _options: ServerOptions = {}
+  private _appStateSub: { remove: () => void } | null = null
+  private _intentionallyStopped = false
 
-  async start(port: number, rootDir: string, host?: string): Promise<number> {
+  async start(port: number, rootDir: string, hostOrOptions?: string | ServerOptions): Promise<number> {
     if (this._isRunning) {
       throw new Error('Static server is already running')
     }
 
+    this._options = normalizeOptions(hostOrOptions)
+    this._rootDir = rootDir
+    this._intentionallyStopped = false
+
+    const host = this._options.host
     const actualPort = await HttpServerModule.startStaticServer(port, rootDir, host)
     this._isRunning = actualPort > 0
     this._port = actualPort
+
+    if (this._options.autoRestart) {
+      this._registerAutoRestart()
+    }
+
     return actualPort
   }
 
@@ -109,14 +201,53 @@ export class StaticServer {
   }
 
   async stop(): Promise<void> {
+    this._intentionallyStopped = true
+    this._unregisterAutoRestart()
+
     if (!this._isRunning) return
 
     await HttpServerModule.stopStaticServer()
     this._isRunning = false
   }
 
-  isRunning(): boolean {
-    return this._isRunning
+  async isRunning(): Promise<boolean> {
+    const nativeRunning = await HttpServerModule.isRunning()
+    this._isRunning = nativeRunning
+    return nativeRunning
+  }
+
+  private _registerAutoRestart(): void {
+    if (this._appStateSub) return
+
+    this._appStateSub = AppState.addEventListener('change', async (state: AppStateStatus) => {
+      if (state !== 'active') return
+      if (this._intentionallyStopped) return
+
+      const alive = await this.isRunning()
+      if (!alive) {
+        console.log('[StaticServer] Detected server is dead, auto-restarting...')
+        try { await HttpServerModule.stopStaticServer() } catch (_) { /* ignore */ }
+
+        try {
+          const host = this._options.host
+          const actualPort = await HttpServerModule.startStaticServer(this._port, this._rootDir, host)
+          if (actualPort > 0) {
+            this._isRunning = true
+            this._port = actualPort
+            console.log(`[StaticServer] Auto-restarted on port ${actualPort}`)
+          }
+        } catch (e) {
+          console.error('[StaticServer] Auto-restart failed:', e)
+        }
+      }
+    })
+  }
+
+  private _unregisterAutoRestart(): void {
+    if (this._appStateSub) {
+      this._appStateSub.remove()
+      this._appStateSub = null
+    }
   }
 }
 
@@ -124,16 +255,32 @@ export class StaticServer {
 export class AppServer {
   private _isRunning = false
   private _port = 0
+  private _handler: RequestHandler | null = null
+  private _rootDir = ''
+  private _options: ServerOptions = {}
+  private _appStateSub: { remove: () => void } | null = null
+  private _intentionallyStopped = false
 
-  async start(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<number> {
+  async start(port: number, rootDir: string, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<number> {
     if (this._isRunning) {
       throw new Error('App server is already running')
     }
 
+    this._options = normalizeOptions(hostOrOptions)
+    this._handler = handler
+    this._rootDir = rootDir
+    this._intentionallyStopped = false
+
     const wrappedHandler = wrapHandler(handler)
+    const host = this._options.host
     const actualPort = await HttpServerModule.startAppServer(port, rootDir, wrappedHandler, host)
     this._isRunning = actualPort > 0
     this._port = actualPort
+
+    if (this._options.autoRestart) {
+      this._registerAutoRestart()
+    }
+
     return actualPort
   }
 
@@ -142,14 +289,54 @@ export class AppServer {
   }
 
   async stop(): Promise<void> {
+    this._intentionallyStopped = true
+    this._unregisterAutoRestart()
+
     if (!this._isRunning) return
 
     await HttpServerModule.stopAppServer()
     this._isRunning = false
   }
 
-  isRunning(): boolean {
-    return this._isRunning
+  async isRunning(): Promise<boolean> {
+    const nativeRunning = await HttpServerModule.isRunning()
+    this._isRunning = nativeRunning
+    return nativeRunning
+  }
+
+  private _registerAutoRestart(): void {
+    if (this._appStateSub) return
+
+    this._appStateSub = AppState.addEventListener('change', async (state: AppStateStatus) => {
+      if (state !== 'active') return
+      if (this._intentionallyStopped) return
+
+      const alive = await this.isRunning()
+      if (!alive && this._handler) {
+        console.log('[AppServer] Detected server is dead, auto-restarting...')
+        try { await HttpServerModule.stopAppServer() } catch (_) { /* ignore */ }
+
+        try {
+          const wrappedHandler = wrapHandler(this._handler)
+          const host = this._options.host
+          const actualPort = await HttpServerModule.startAppServer(this._port, this._rootDir, wrappedHandler, host)
+          if (actualPort > 0) {
+            this._isRunning = true
+            this._port = actualPort
+            console.log(`[AppServer] Auto-restarted on port ${actualPort}`)
+          }
+        } catch (e) {
+          console.error('[AppServer] Auto-restart failed:', e)
+        }
+      }
+    })
+  }
+
+  private _unregisterAutoRestart(): void {
+    if (this._appStateSub) {
+      this._appStateSub.remove()
+      this._appStateSub = null
+    }
   }
 }
 
@@ -169,6 +356,11 @@ export class ConfigServer {
   private _port = 0
   private _wsEnabled = false
   private _wsHandlers: Map<string, WebSocketConnectionHandler> = new Map()
+  private _handler: RequestHandler | null = null
+  private _config: ServerConfig | null = null
+  private _options: ServerOptions = {}
+  private _appStateSub: { remove: () => void } | null = null
+  private _intentionallyStopped = false
 
   get port(): number {
     return this._port
@@ -184,10 +376,15 @@ export class ConfigServer {
     return this
   }
 
-  async start(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<number> {
+  async start(port: number, handler: RequestHandler, config: ServerConfig, hostOrOptions?: string | ServerOptions): Promise<number> {
     if (this._isRunning) {
       throw new Error('Config server is already running')
     }
+
+    this._options = normalizeOptions(hostOrOptions)
+    this._handler = handler
+    this._config = config
+    this._intentionallyStopped = false
 
     // 检查是否有 WebSocket 配置
     if (config.mounts) {
@@ -199,6 +396,7 @@ export class ConfigServer {
 
     const wrappedHandler = wrapHandler(handler)
     const configJson = JSON.stringify(config)
+    const host = this._options.host
     const actualPort = await HttpServerModule.startServerWithConfig(port, wrappedHandler, configJson, host)
     this._isRunning = actualPort > 0
     this._port = actualPort
@@ -206,6 +404,10 @@ export class ConfigServer {
     // 如果启动成功且有 WebSocket 配置，设置 WebSocket 处理器
     if (actualPort > 0 && this._wsEnabled) {
       this._setupWebSocketHandler()
+    }
+
+    if (this._options.autoRestart) {
+      this._registerAutoRestart()
     }
 
     return actualPort
@@ -276,6 +478,9 @@ export class ConfigServer {
   }
 
   async stop(): Promise<void> {
+    this._intentionallyStopped = true
+    this._unregisterAutoRestart()
+
     if (!this._isRunning) return
 
     await HttpServerModule.stopAppServer()
@@ -284,8 +489,50 @@ export class ConfigServer {
     this._wsHandlers.clear()
   }
 
-  isRunning(): boolean {
-    return this._isRunning
+  async isRunning(): Promise<boolean> {
+    const nativeRunning = await HttpServerModule.isRunning()
+    this._isRunning = nativeRunning
+    return nativeRunning
+  }
+
+  private _registerAutoRestart(): void {
+    if (this._appStateSub) return
+
+    this._appStateSub = AppState.addEventListener('change', async (state: AppStateStatus) => {
+      if (state !== 'active') return
+      if (this._intentionallyStopped) return
+
+      const alive = await this.isRunning()
+      if (!alive && this._handler && this._config) {
+        console.log('[ConfigServer] Detected server is dead, auto-restarting...')
+        try { await HttpServerModule.stopAppServer() } catch (_) { /* ignore */ }
+
+        try {
+          const wrappedHandler = wrapHandler(this._handler)
+          const configJson = JSON.stringify(this._config)
+          const host = this._options.host
+          const actualPort = await HttpServerModule.startServerWithConfig(this._port, wrappedHandler, configJson, host)
+          if (actualPort > 0) {
+            this._isRunning = true
+            this._port = actualPort
+            // 重新设置 WebSocket 处理器
+            if (this._wsEnabled) {
+              this._setupWebSocketHandler()
+            }
+            console.log(`[ConfigServer] Auto-restarted on port ${actualPort}`)
+          }
+        } catch (e) {
+          console.error('[ConfigServer] Auto-restart failed:', e)
+        }
+      }
+    })
+  }
+
+  private _unregisterAutoRestart(): void {
+    if (this._appStateSub) {
+      this._appStateSub.remove()
+      this._appStateSub = null
+    }
   }
 }
 
@@ -293,11 +540,11 @@ export class ConfigServer {
  * 创建并启动普通 HTTP 服务器
  * @param port 端口号
  * @param handler 请求处理器
- * @param host 监听的IP地址
+ * @param options 启动选项 (host, autoRestart)
  */
-export async function createHttpServer(port: number, handler: RequestHandler, host?: string): Promise<HttpServer> {
+export async function createHttpServer(port: number, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<HttpServer> {
   const server = new HttpServer()
-  await server.start(port, handler, host)
+  await server.start(port, handler, hostOrOptions)
   return server
 }
 
@@ -305,11 +552,11 @@ export async function createHttpServer(port: number, handler: RequestHandler, ho
  * 创建并启动静态文件服务器
  * @param port 端口号
  * @param rootDir 静态文件根目录路径
- * @param host 监听的IP地址
+ * @param options 启动选项 (host, autoRestart)
  */
-export async function createStaticServer(port: number, rootDir: string, host?: string): Promise<StaticServer> {
+export async function createStaticServer(port: number, rootDir: string, hostOrOptions?: string | ServerOptions): Promise<StaticServer> {
   const server = new StaticServer()
-  await server.start(port, rootDir, host)
+  await server.start(port, rootDir, hostOrOptions)
   return server
 }
 
@@ -318,11 +565,11 @@ export async function createStaticServer(port: number, rootDir: string, host?: s
  * @param port 端口号
  * @param rootDir 静态文件根目录路径
  * @param handler 请求处理器
- * @param host 监听的IP地址
+ * @param options 启动选项 (host, autoRestart)
  */
-export async function createAppServer(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<AppServer> {
+export async function createAppServer(port: number, rootDir: string, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<AppServer> {
   const server = new AppServer()
-  await server.start(port, rootDir, handler, host)
+  await server.start(port, rootDir, handler, hostOrOptions)
   return server
 }
 
@@ -331,11 +578,11 @@ export async function createAppServer(port: number, rootDir: string, handler: Re
  * @param port 端口号
  * @param handler 请求处理器
  * @param config 插件配置（可包含 root_dir 指定静态文件根目录）
- * @param host 监听的IP地址
+ * @param options 启动选项 (host, autoRestart)
  */
-export async function createConfigServer(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<ConfigServer> {
+export async function createConfigServer(port: number, handler: RequestHandler, config: ServerConfig, hostOrOptions?: string | ServerOptions): Promise<ConfigServer> {
   const server = new ConfigServer()
-  await server.start(port, handler, config, host)
+  await server.start(port, handler, config, hostOrOptions)
   return server
 }
 

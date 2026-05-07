@@ -341,14 +341,14 @@ server.listen(8080, () => {
 
 基础 HTTP 服务器类，用于处理动态请求。
 
-#### `start(port: number, handler: RequestHandler, host?: string): Promise<number>`
+#### `start(port: number, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<number>`
 
 启动 HTTP 服务器。
 
 **参数**:
 - `port`: 端口号（1024-65535）。传入 `0` 将自动分配一个随机空闲端口。
 - `handler`: 请求处理函数,接收 `HttpRequest` 并返回 `HttpResponse`
-- `host`: (可选) 监听的IP地址,默认为 `127.0.0.1`。传入 `0.0.0.0` 可允许外部访问
+- `hostOrOptions`: (可选) 监听的IP地址字符串（如 `'0.0.0.0'`），或 `ServerOptions` 配置对象
 
 **返回**: 实际监听的端口号。如果启动失败返回 `0`
 
@@ -377,18 +377,47 @@ console.log(`服务器启动在端口: ${actualPort}`);
 await server.stop();
 ```
 
+#### `isRunning(): Promise<boolean>`
+
+检查 HTTP 服务器是否正在运行。通过 TCP 连接探测真实 socket 状态（200ms 超时），而非仅返回内存中的状态标记。
+
+**示例**:
+```typescript
+const alive = await server.isRunning();
+```
+
+#### 自动恢复后台挂起的服务
+
+iOS 系统在锁屏约 30 秒后会挂起 App，导致 HTTP 服务的 TCP socket 被系统关闭。开启 `autoRestart` 后，库内部会自动监听 App 前后台切换，当检测到服务被挂起时自动重启，无需在 App 中添加额外代码。
+
+```typescript
+// 方式一：使用 ServerOptions
+await server.start(8080, handler, { autoRestart: true });
+
+// 方式二：同时设置 host 和 autoRestart
+await server.start(8080, handler, {
+  host: '0.0.0.0',
+  autoRestart: true,
+});
+
+// 方式三：兼容旧版 host 字符串写法（不含 autoRestart）
+await server.start(8080, handler, '0.0.0.0');
+```
+
+> **工作原理**：进入后台时通过 `beginBackgroundTask` 争取额外存活时间（约 30 秒～3 分钟）；回到前台时通过 TCP connect 真实探测 socket 是否存活——存活则不做任何操作，已死则自动清理并重启。
+
 ### StaticServer
 
 静态文件服务器类。
 
-#### `start(port: number, rootDir: string, host?: string): Promise<number>`
+#### `start(port: number, rootDir: string, hostOrOptions?: string | ServerOptions): Promise<number>`
 
 启动静态 file 服务器。
 
 **参数**:
 - `port`: 端口号。传入 `0` 为随机端口。
 - `rootDir`: 静态文件根目录的绝对路径
-- `host`: (可选) 监听的IP地址,默认为 `127.0.0.1`
+- `hostOrOptions`: (可选) 监听的IP地址字符串，或 `ServerOptions` 配置对象
 
 **返回**: 实际监听的端口号。如果启动失败返回 `0`
 
@@ -409,15 +438,15 @@ const success = await server.start(
 
 停止静态文件服务器。
 
-#### `isRunning(): boolean`
+#### `isRunning(): Promise<boolean>`
 
-检查静态服务器是否正在运行.
+检查静态服务器是否正在运行。通过 TCP 连接探测真实 socket 状态。
 
 ### AppServer
 
 应用服务器类（混合模式），同时支持静态文件和动态请求。
 
-#### `start(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<number>`
+#### `start(port: number, rootDir: string, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<number>`
 
 启动应用服务器（混合模式）。服务器会首先尝试在 `rootDir` 中查找对应的静态文件。如果找到且方法为 GET,则直接返回文件内容。否则,将请求转发给 `handler` 处理。
 
@@ -425,15 +454,15 @@ const success = await server.start(
 - `port`: 端口号
 - `rootDir`: 静态文件根目录
 - `handler`: 请求处理器
-- `host`: (可选) 监听的IP地址,默认为 `127.0.0.1`
+- `hostOrOptions`: (可选) 监听的IP地址字符串，或 `ServerOptions` 配置对象
 
 #### `stop(): Promise<void>`
 
 停止应用服务器.
 
-#### `isRunning(): boolean`
+#### `isRunning(): Promise<boolean>`
 
-检查应用服务器是否正在运行。
+检查应用服务器是否正在运行。通过 TCP 连接探测真实 socket 状态。
 
 ### 类型定义
 
@@ -468,7 +497,7 @@ interface HttpResponse {
 
 带插件配置支持的服务器类（WebDAV、Zip 挂载等）。
 
-#### `start(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<number>`
+#### `start(port: number, handler: RequestHandler, config: ServerConfig, hostOrOptions?: string | ServerOptions): Promise<number>`
 
 启动带插件配置的服务器。
 
@@ -476,7 +505,7 @@ interface HttpResponse {
 - `port`: 端口号
 - `handler`: 请求处理器
 - `config`: 插件配置对象（包含 `root_dir`）
-- `host`: (可选) 监听的IP地址，默认为 `127.0.0.1`
+- `hostOrOptions`: (可选) 监听的IP地址字符串，或 `ServerOptions` 配置对象
 
 **示例**:
 ```typescript
@@ -497,32 +526,32 @@ const config = {
 };
 
 const server = new ConfigServer();
-await server.start(8080, handler, config, '0.0.0.0');
+await server.start(8080, handler, config, { host: '0.0.0.0' });
 ```
 
 #### `stop(): Promise<void>`
 
 停止配置服务器。
 
-#### `isRunning(): boolean`
+#### `isRunning(): Promise<boolean>`
 
-检查配置服务器是否正在运行。
+检查配置服务器是否正在运行。通过 TCP 连接探测真实 socket 状态。
 
 ### 帮助函数
 
-#### `createHttpServer(port: number, handler: RequestHandler, host?: string): Promise<HttpServer>`
+#### `createHttpServer(port: number, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<HttpServer>`
 
 创建并启动基础 HTTP 服务器。
 
-#### `createStaticServer(port: number, rootDir: string, host?: string): Promise<StaticServer>`
+#### `createStaticServer(port: number, rootDir: string, hostOrOptions?: string | ServerOptions): Promise<StaticServer>`
 
 创建并启动静态文件服务器。
 
-#### `createAppServer(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<AppServer>`
+#### `createAppServer(port: number, rootDir: string, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<AppServer>`
 
 创建并启动应用服务器（混合模式）。
 
-#### `createConfigServer(port: number, handler: RequestHandler, config: ServerConfig, host?: string): Promise<ConfigServer>`
+#### `createConfigServer(port: number, handler: RequestHandler, config: ServerConfig, hostOrOptions?: string | ServerOptions): Promise<ConfigServer>`
 
 创建并启动带插件配置的服务器。
 
@@ -548,6 +577,20 @@ interface HttpResponse {
   statusCode: number;     // HTTP 状态码 (200, 404, 500, etc.)
   headers?: Record<string, string>;  // 响应头（可选）
   body?: string | ArrayBuffer;       // 响应体（支持 string 或 ArrayBuffer）
+}
+```
+
+#### ServerOptions
+
+```typescript
+interface ServerOptions {
+  /** 监听的 IP 地址，默认 127.0.0.1 */
+  host?: string
+  /**
+   * 锁屏/切换App后回到前台时，自动检测并重启被系统挂起的服务。
+   * 默认 false，设为 true 后无需在 App 中添加额外代码。
+   */
+  autoRestart?: boolean
 }
 ```
 
@@ -740,6 +783,13 @@ curl http://localhost:8080/api/test
 ```
 
 ## 📝 更新日志
+
+### 1.9.0
+
+- 🔄 `start()` 方法支持 `ServerOptions` 配置对象（向后兼容旧版 `host` 字符串）
+- 🔁 新增 `autoRestart` 选项：锁屏后回到前台自动检测并重启被挂起的服务
+- 🔍 `isRunning()` 改为异步方法，通过 TCP 连接探测真实 socket 状态
+- 🛡️ iOS 后台任务保活：进入后台时自动请求额外执行时间
 
 ### 1.8.0 (2026-03-18)
 
