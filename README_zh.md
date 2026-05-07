@@ -322,9 +322,9 @@ await server.start(8080, async (request) => {
 ```typescript
 import { createServer } from 'react-native-nitro-http-server';
 
+// 基础用法
 const server = createServer((req, res) => {
   console.log(req.method, req.url);
-  
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/plain');
   res.end('Hello from Node.js compatible API!');
@@ -333,6 +333,21 @@ const server = createServer((req, res) => {
 server.listen(8080, () => {
   console.log('Server listening on port 8080');
 });
+```
+
+**启用 `autoRestart`：**
+
+```typescript
+// 将 ServerOptions 作为第一个参数传入
+const server = createServer({ autoRestart: true }, (req, res) => {
+  res.end('Hello');
+}).listen(3000);
+
+// 或直接使用 Server 类
+import { Server } from 'react-native-nitro-http-server';
+const server = new Server({ autoRestart: true });
+server.on('request', (req, res) => res.end('Hello'));
+server.listen(3000);
 ```
 
 ## 📖 API 文档
@@ -668,12 +683,27 @@ type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResp
 
 导出以下与 Node.js `http` 模块兼容的对象和函数：
 
+- `createServer(options?: ServerOptions, requestListener?: (req: IncomingMessage, res: ServerResponse) => void): Server`
 - `createServer(requestListener?: (req: IncomingMessage, res: ServerResponse) => void): Server`
-- `Server` 类
+- `Server` 类 — 构造函数 `new Server(options?: ServerOptions, requestListener?)`
 - `IncomingMessage` 类
 - `ServerResponse` 类
 - `STATUS_CODES`
 - `METHODS`
+
+#### `ServerOptions` (Node.js 兼容层)
+
+```typescript
+interface ServerOptions {
+  IncomingMessage?: typeof IncomingMessage;
+  ServerResponse?: typeof ServerResponse;
+  requestTimeout?: number;      // 默认 300000
+  headersTimeout?: number;      // 默认 60000
+  keepAliveTimeout?: number;    // 默认 5000
+  /** 锁屏后回到前台自动检测并重启被挂起的服务。默认 false */
+  autoRestart?: boolean;
+}
+```
 
 #### 流式 API
 

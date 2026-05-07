@@ -326,9 +326,9 @@ Provides an interface compatible with Node.js `http` module, facilitating migrat
 ```typescript
 import { createServer } from 'react-native-nitro-http-server';
 
+// Basic usage
 const server = createServer((req, res) => {
   console.log(req.method, req.url);
-  
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/plain');
   res.end('Hello from Node.js compatible API!');
@@ -337,6 +337,21 @@ const server = createServer((req, res) => {
 server.listen(8080, () => {
   console.log('Server listening on port 8080');
 });
+```
+
+**With `autoRestart`:**
+
+```typescript
+// Pass ServerOptions as the first argument
+const server = createServer({ autoRestart: true }, (req, res) => {
+  res.end('Hello');
+}).listen(3000);
+
+// Or using the Server class directly
+import { Server } from 'react-native-nitro-http-server';
+const server = new Server({ autoRestart: true });
+server.on('request', (req, res) => res.end('Hello'));
+server.listen(3000);
 ```
 
 ## 📖 API Documentation
@@ -690,12 +705,27 @@ The request handler can return a Promise or a response object directly.
 
 Exports the following objects and functions compatible with Node.js `http` module:
 
+- `createServer(options?: ServerOptions, requestListener?: (req: IncomingMessage, res: ServerResponse) => void): Server`
 - `createServer(requestListener?: (req: IncomingMessage, res: ServerResponse) => void): Server`
-- `Server` class
+- `Server` class — constructor accepts `new Server(options?: ServerOptions, requestListener?)`
 - `IncomingMessage` class
 - `ServerResponse` class
 - `STATUS_CODES`
 - `METHODS`
+
+#### `ServerOptions` (Node.js Compatible)
+
+```typescript
+interface ServerOptions {
+  IncomingMessage?: typeof IncomingMessage;
+  ServerResponse?: typeof ServerResponse;
+  requestTimeout?: number;      // default: 300000
+  headersTimeout?: number;      // default: 60000
+  keepAliveTimeout?: number;    // default: 5000
+  /** Automatically detect and restart after iOS background suspension. Default false. */
+  autoRestart?: boolean;
+}
+```
 
 #### Streaming APIs
 

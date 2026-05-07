@@ -1,6 +1,6 @@
 {
   "name": "react-native-nitro-http-server",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "description": "React Native HTTP Server with Nitro Modules",
   "repository": {
     "type": "git",
@@ -36,6 +36,7 @@
   "author": "",
   "license": "ISC",
   "peerDependencies": {
+    "react-native": "*",
     "react-native-nitro-modules": "^0.35.0"
   },
   "dependencies": {

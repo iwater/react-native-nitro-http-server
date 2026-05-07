@@ -4,6 +4,7 @@
 import { EventEmitter } from 'eventemitter3';
 import { NitroModules } from 'react-native-nitro-modules';
 import { Buffer } from 'react-native-nitro-buffer';
+import { AppState, AppStateStatus } from 'react-native';
 import type { HttpServer as NitroHttpServer, HttpRequest, HttpResponse } from './HttpServer.nitro';
 
 // ========== Types ==========
@@ -16,6 +17,11 @@ interface ServerOptions {
     requestTimeout?: number;
     headersTimeout?: number;
     keepAliveTimeout?: number;
+    /**
+     * Automatically detect and restart the server after iOS background suspension.
+     * Defaults to false.
+     */
+    autoRestart?: boolean;
 }
 
 interface AddressInfo {
@@ -570,12 +576,16 @@ export class Server extends EventEmitter {
     private _port: number = 0;
     private _host: string = '127.0.0.1';
     private _requestListener?: RequestListener;
+    private _intentionallyStopped = false;
 
     // Native server
     private _nativeServer: NitroHttpServer;
 
     // Options
     private _options: ServerOptions;
+
+    // AppState listener for autoRestart
+    private _appStateSub: { remove: () => void } | null = null;
 
     constructor(options?: ServerOptions | RequestListener, requestListener?: RequestListener) {
         super();
@@ -609,6 +619,7 @@ export class Server extends EventEmitter {
         }
 
         this._port = port;
+        this._intentionallyStopped = false;
 
         // Parse hostname and callback from overloaded arguments
         let hostname: string | undefined;
@@ -639,6 +650,11 @@ export class Server extends EventEmitter {
                 if (actualPort > 0) {
                     this._port = actualPort;
                     this.listening = true;
+
+                    if (this._options.autoRestart) {
+                        this._registerAutoRestart();
+                    }
+
                     this.emit('listening');
                     if (cb) cb();
                 } else {
@@ -657,6 +673,9 @@ export class Server extends EventEmitter {
      * Stops the server
      */
     close(callback?: (err?: Error) => void): this {
+        this._intentionallyStopped = true;
+        this._unregisterAutoRestart();
+
         if (!this.listening) {
             if (callback) {
                 setTimeout(() => callback(new Error('Server is not running')), 0);
@@ -675,6 +694,48 @@ export class Server extends EventEmitter {
             });
 
         return this;
+    }
+
+    /**
+     * Registers an AppState listener to auto-restart the server
+     * after iOS background suspension or Android process recovery.
+     */
+    private _registerAutoRestart(): void {
+        if (this._appStateSub) return;
+
+        this._appStateSub = AppState.addEventListener('change', async (state: AppStateStatus) => {
+            if (state !== 'active') return;
+            if (this._intentionallyStopped) return;
+
+            // TCP probe to check if socket is really alive
+            const alive = await this._nativeServer.isRunning();
+            if (!alive) {
+                console.log('[http.Server] Detected server is dead, auto-restarting...');
+                try { await this._nativeServer.stop(); } catch (_) { /* ignore */ }
+
+                try {
+                    const actualPort = await this._nativeServer.start(
+                        this._port,
+                        this._handleNativeRequest.bind(this),
+                        this._host
+                    );
+                    if (actualPort > 0) {
+                        this._port = actualPort;
+                        this.listening = true;
+                        console.log(`[http.Server] Auto-restarted on port ${actualPort}`);
+                    }
+                } catch (e) {
+                    console.error('[http.Server] Auto-restart failed:', e);
+                }
+            }
+        });
+    }
+
+    private _unregisterAutoRestart(): void {
+        if (this._appStateSub) {
+            this._appStateSub.remove();
+            this._appStateSub = null;
+        }
     }
 
     /**
