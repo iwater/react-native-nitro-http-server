@@ -127,6 +127,23 @@ export class HttpServer {
     return nativeRunning
   }
 
+  private async _probeAlive(): Promise<boolean> {
+    // 用 fetch 向自己的端口发 HEAD 请求做健康检查
+    // 每个实例独立探测自己的端口，不受 C++ 层单例全局端口限制
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20);
+      await fetch(`http://127.0.0.1:${this._port}/`, {
+        method: 'HEAD',
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private _registerAutoRestart(): void {
     if (this._appStateSub) return
 
@@ -134,7 +151,7 @@ export class HttpServer {
       if (state !== 'active') return
       if (this._intentionallyStopped) return
 
-      const alive = await this.isRunning()
+      const alive = await this._probeAlive()
       if (!alive && this._handler) {
         console.log('[HttpServer] Detected server is dead, auto-restarting...')
         try {
@@ -216,6 +233,21 @@ export class StaticServer {
     return nativeRunning
   }
 
+  private async _probeAlive(): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20);
+      await fetch(`http://127.0.0.1:${this._port}/`, {
+        method: 'HEAD',
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private _registerAutoRestart(): void {
     if (this._appStateSub) return
 
@@ -223,7 +255,7 @@ export class StaticServer {
       if (state !== 'active') return
       if (this._intentionallyStopped) return
 
-      const alive = await this.isRunning()
+      const alive = await this._probeAlive()
       if (!alive) {
         console.log('[StaticServer] Detected server is dead, auto-restarting...')
         try { await HttpServerModule.stopStaticServer() } catch (_) { /* ignore */ }
@@ -304,6 +336,21 @@ export class AppServer {
     return nativeRunning
   }
 
+  private async _probeAlive(): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20);
+      await fetch(`http://127.0.0.1:${this._port}/`, {
+        method: 'HEAD',
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private _registerAutoRestart(): void {
     if (this._appStateSub) return
 
@@ -311,7 +358,7 @@ export class AppServer {
       if (state !== 'active') return
       if (this._intentionallyStopped) return
 
-      const alive = await this.isRunning()
+      const alive = await this._probeAlive()
       if (!alive && this._handler) {
         console.log('[AppServer] Detected server is dead, auto-restarting...')
         try { await HttpServerModule.stopAppServer() } catch (_) { /* ignore */ }
@@ -495,6 +542,21 @@ export class ConfigServer {
     return nativeRunning
   }
 
+  private async _probeAlive(): Promise<boolean> {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 20);
+      await fetch(`http://127.0.0.1:${this._port}/`, {
+        method: 'HEAD',
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private _registerAutoRestart(): void {
     if (this._appStateSub) return
 
@@ -502,7 +564,7 @@ export class ConfigServer {
       if (state !== 'active') return
       if (this._intentionallyStopped) return
 
-      const alive = await this.isRunning()
+      const alive = await this._probeAlive()
       if (!alive && this._handler && this._config) {
         console.log('[ConfigServer] Detected server is dead, auto-restarting...')
         try { await HttpServerModule.stopAppServer() } catch (_) { /* ignore */ }

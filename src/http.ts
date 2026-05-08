@@ -700,6 +700,22 @@ export class Server extends EventEmitter {
      * Registers an AppState listener to auto-restart the server
      * after iOS background suspension or Android process recovery.
      */
+    private async _probeAlive(): Promise<boolean> {
+        // 每个实例独立探测自己的端口，多实例互不干扰
+        try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 20);
+            await fetch(`http://127.0.0.1:${this._port}/`, {
+                method: 'HEAD',
+                signal: controller.signal,
+            });
+            clearTimeout(timeout);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
     private _registerAutoRestart(): void {
         if (this._appStateSub) return;
 
@@ -707,8 +723,7 @@ export class Server extends EventEmitter {
             if (state !== 'active') return;
             if (this._intentionallyStopped) return;
 
-            // TCP probe to check if socket is really alive
-            const alive = await this._nativeServer.isRunning();
+            const alive = await this._probeAlive();
             if (!alive) {
                 console.log('[http.Server] Detected server is dead, auto-restarting...');
                 try { await this._nativeServer.stop(); } catch (_) { /* ignore */ }
