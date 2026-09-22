@@ -2,6 +2,7 @@ import { NitroModules } from 'react-native-nitro-modules'
 import { AppState, AppStateStatus } from 'react-native'
 import type { HttpServer as NitroHttpServer, HttpRequest, HttpResponse as NitroHttpResponse, ServerConfig, CorsConfig } from './HttpServer.nitro'
 import { createServer } from './http'
+import { LoopRef } from './loopRef'
 
 // Redefine HttpResponse for User (User sees unified body)
 export interface HttpResponse extends Omit<NitroHttpResponse, 'body' | 'binaryBody'> {
@@ -73,6 +74,12 @@ const wrapHandler = (handler: RequestHandler): (request: HttpRequest) => Promise
 
 // 普通 HTTP 服务器
 export class HttpServer {
+  /**
+   * Node 的 handle-ref：running 的 server 顶住事件循环。
+   * 宿主看不见原生 server（start() 是**真异步**的：await 原生 start 之后才
+   * emit 'listening'），没有这个 ref 的话 loop 会先收泵、回调永远不投递。
+   */
+  private _loopRef = new LoopRef('http-server.HttpServer')
   private _isRunning = false
   private _port = 0
   private _handler: RequestHandler | null = null
@@ -91,7 +98,17 @@ export class HttpServer {
 
     const wrappedHandler = wrapHandler(handler)
     const host = this._options.host
-    const actualPort = await HttpServerModule.start(port, wrappedHandler, host)
+    // running 的 server 顶住 loop（Node 的 handle ref）。原生 start 是异步的，
+    // 没有这个 ref 的话 loop 会在 'listening' 之前收泵。
+    this._loopRef.acquire()
+    let actualPort = 0
+    try {
+      actualPort = await HttpServerModule.start(port, wrappedHandler, host)
+    } catch (e) {
+      this._loopRef.release()
+      throw e
+    }
+    if (actualPort <= 0) this._loopRef.release()
     this._isRunning = actualPort > 0
     this._port = actualPort
 
@@ -113,6 +130,7 @@ export class HttpServer {
     if (!this._isRunning) return
 
     await HttpServerModule.stop()
+    this._loopRef.release()
     this._isRunning = false
   }
 
@@ -130,18 +148,28 @@ export class HttpServer {
   private async _probeAlive(): Promise<boolean> {
     // 用 fetch 向自己的端口发 HEAD 请求做健康检查
     // 每个实例独立探测自己的端口，不受 C++ 层单例全局端口限制
-    try {
+    // 500ms 超时 + 失败 100ms 后重试一次：该请求会经过用户 handler，而回前台那一刻
+    // JS 线程往往正忙 —— 20ms 会把**健康**服务器判死并重启它（重启窗口内连接全断）。
+    const probe = async (): Promise<boolean> => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 20);
-      await fetch(`http://127.0.0.1:${this._port}/`, {
-        method: 'HEAD',
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      return true;
-    } catch {
-      return false;
-    }
+      const timeout = setTimeout(() => controller.abort(), 500);
+      try {
+        await fetch(`http://127.0.0.1:${this._port}/`, {
+          method: 'HEAD',
+          signal: controller.signal,
+        });
+        return true;
+      } catch {
+        return false;
+      } finally {
+        // 必须清：失败路径（连接被拒时 fetch 立即 reject）不清就会留下悬挂的 500ms
+        // 定时器 —— 每次探测一个，重试一次就是两个。
+        clearTimeout(timeout);
+      }
+    };
+    if (await probe()) return true;
+    await new Promise(r => setTimeout(r, 100));
+    return probe();
   }
 
   private _registerAutoRestart(): void {
@@ -154,21 +182,31 @@ export class HttpServer {
       const alive = await this._probeAlive()
       if (!alive && this._handler) {
         console.log('[HttpServer] Detected server is dead, auto-restarting...')
+        // 这条路径绕过 stop()，所以自己配对 LoopRef：原生 stop 成功就放掉 ref
+        // （handle 没了），重启成功再 acquire；重启失败 / 拿到端口 0 也放掉 ——
+        // 否则 ref 一直挂着、进程再也退不出去。形状与 http.ts 的同款处理一致。
+        // ⚠️ 本路径只在 RN 的 AppState 'active' 且服务已死时触发，无头宿主上跑不到，
+        //    属防御性对称，R31 覆盖不到（R31 覆盖的是 start/stop 主路径）。
         try {
           // 清理可能的残留状态
           await HttpServerModule.stop()
+          this._loopRef.release()
         } catch (_) { /* ignore */ }
 
         try {
           const wrappedHandler = wrapHandler(this._handler)
           const host = this._options.host
+          this._loopRef.acquire()
           const actualPort = await HttpServerModule.start(this._port, wrappedHandler, host)
           if (actualPort > 0) {
             this._isRunning = true
             this._port = actualPort
             console.log(`[HttpServer] Auto-restarted on port ${actualPort}`)
+          } else {
+            this._loopRef.release()
           }
         } catch (e) {
+          this._loopRef.release()
           console.error('[HttpServer] Auto-restart failed:', e)
         }
       }
@@ -185,6 +223,8 @@ export class HttpServer {
 
 // 静态文件服务器
 export class StaticServer {
+  /** 同 HttpServer：running 的 server 顶住 loop，stop() 成功时释放。 */
+  private _loopRef = new LoopRef('http-server.StaticServer')
   private _isRunning = false
   private _port = 0
   private _rootDir = ''
@@ -202,7 +242,15 @@ export class StaticServer {
     this._intentionallyStopped = false
 
     const host = this._options.host
-    const actualPort = await HttpServerModule.startStaticServer(port, rootDir, host)
+    this._loopRef.acquire()
+    let actualPort = 0
+    try {
+      actualPort = await HttpServerModule.startStaticServer(port, rootDir, host)
+    } catch (e) {
+      this._loopRef.release()
+      throw e
+    }
+    if (actualPort <= 0) this._loopRef.release()
     this._isRunning = actualPort > 0
     this._port = actualPort
 
@@ -224,6 +272,7 @@ export class StaticServer {
     if (!this._isRunning) return
 
     await HttpServerModule.stopStaticServer()
+    this._loopRef.release()
     this._isRunning = false
   }
 
@@ -234,18 +283,28 @@ export class StaticServer {
   }
 
   private async _probeAlive(): Promise<boolean> {
-    try {
+    // 500ms 超时 + 失败 100ms 后重试一次：该请求会经过用户 handler，而回前台那一刻
+    // JS 线程往往正忙 —— 20ms 会把**健康**服务器判死并重启它（重启窗口内连接全断）。
+    const probe = async (): Promise<boolean> => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 20);
-      await fetch(`http://127.0.0.1:${this._port}/`, {
-        method: 'HEAD',
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      return true;
-    } catch {
-      return false;
-    }
+      const timeout = setTimeout(() => controller.abort(), 500);
+      try {
+        await fetch(`http://127.0.0.1:${this._port}/`, {
+          method: 'HEAD',
+          signal: controller.signal,
+        });
+        return true;
+      } catch {
+        return false;
+      } finally {
+        // 必须清：失败路径（连接被拒时 fetch 立即 reject）不清就会留下悬挂的 500ms
+        // 定时器 —— 每次探测一个，重试一次就是两个。
+        clearTimeout(timeout);
+      }
+    };
+    if (await probe()) return true;
+    await new Promise(r => setTimeout(r, 100));
+    return probe();
   }
 
   private _registerAutoRestart(): void {
@@ -258,17 +317,22 @@ export class StaticServer {
       const alive = await this._probeAlive()
       if (!alive) {
         console.log('[StaticServer] Detected server is dead, auto-restarting...')
-        try { await HttpServerModule.stopStaticServer() } catch (_) { /* ignore */ }
+        // 同 HttpServer 的 auto-restart：绕过 stop()，ref 要自己配对（见上方注释）。
+        try { await HttpServerModule.stopStaticServer(); this._loopRef.release() } catch (_) { /* ignore */ }
 
         try {
           const host = this._options.host
+          this._loopRef.acquire()
           const actualPort = await HttpServerModule.startStaticServer(this._port, this._rootDir, host)
           if (actualPort > 0) {
             this._isRunning = true
             this._port = actualPort
             console.log(`[StaticServer] Auto-restarted on port ${actualPort}`)
+          } else {
+            this._loopRef.release()
           }
         } catch (e) {
+          this._loopRef.release()
           console.error('[StaticServer] Auto-restart failed:', e)
         }
       }
@@ -285,6 +349,8 @@ export class StaticServer {
 
 // App HTTP 服务器 (混合静态文件和回调)
 export class AppServer {
+  /** 同 HttpServer：running 的 server 顶住 loop，stop() 成功时释放。 */
+  private _loopRef = new LoopRef('http-server.AppServer')
   private _isRunning = false
   private _port = 0
   private _handler: RequestHandler | null = null
@@ -305,7 +371,15 @@ export class AppServer {
 
     const wrappedHandler = wrapHandler(handler)
     const host = this._options.host
-    const actualPort = await HttpServerModule.startAppServer(port, rootDir, wrappedHandler, host)
+    this._loopRef.acquire()
+    let actualPort = 0
+    try {
+      actualPort = await HttpServerModule.startAppServer(port, rootDir, wrappedHandler, host)
+    } catch (e) {
+      this._loopRef.release()
+      throw e
+    }
+    if (actualPort <= 0) this._loopRef.release()
     this._isRunning = actualPort > 0
     this._port = actualPort
 
@@ -327,6 +401,7 @@ export class AppServer {
     if (!this._isRunning) return
 
     await HttpServerModule.stopAppServer()
+    this._loopRef.release()
     this._isRunning = false
   }
 
@@ -337,18 +412,28 @@ export class AppServer {
   }
 
   private async _probeAlive(): Promise<boolean> {
-    try {
+    // 500ms 超时 + 失败 100ms 后重试一次：该请求会经过用户 handler，而回前台那一刻
+    // JS 线程往往正忙 —— 20ms 会把**健康**服务器判死并重启它（重启窗口内连接全断）。
+    const probe = async (): Promise<boolean> => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 20);
-      await fetch(`http://127.0.0.1:${this._port}/`, {
-        method: 'HEAD',
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      return true;
-    } catch {
-      return false;
-    }
+      const timeout = setTimeout(() => controller.abort(), 500);
+      try {
+        await fetch(`http://127.0.0.1:${this._port}/`, {
+          method: 'HEAD',
+          signal: controller.signal,
+        });
+        return true;
+      } catch {
+        return false;
+      } finally {
+        // 必须清：失败路径（连接被拒时 fetch 立即 reject）不清就会留下悬挂的 500ms
+        // 定时器 —— 每次探测一个，重试一次就是两个。
+        clearTimeout(timeout);
+      }
+    };
+    if (await probe()) return true;
+    await new Promise(r => setTimeout(r, 100));
+    return probe();
   }
 
   private _registerAutoRestart(): void {
@@ -361,18 +446,23 @@ export class AppServer {
       const alive = await this._probeAlive()
       if (!alive && this._handler) {
         console.log('[AppServer] Detected server is dead, auto-restarting...')
-        try { await HttpServerModule.stopAppServer() } catch (_) { /* ignore */ }
+        // 同 HttpServer 的 auto-restart：绕过 stop()，ref 要自己配对（见上方注释）。
+        try { await HttpServerModule.stopAppServer(); this._loopRef.release() } catch (_) { /* ignore */ }
 
         try {
           const wrappedHandler = wrapHandler(this._handler)
           const host = this._options.host
+          this._loopRef.acquire()
           const actualPort = await HttpServerModule.startAppServer(this._port, this._rootDir, wrappedHandler, host)
           if (actualPort > 0) {
             this._isRunning = true
             this._port = actualPort
             console.log(`[AppServer] Auto-restarted on port ${actualPort}`)
+          } else {
+            this._loopRef.release()
           }
         } catch (e) {
+          this._loopRef.release()
           console.error('[AppServer] Auto-restart failed:', e)
         }
       }
@@ -399,6 +489,8 @@ export type WebSocketConnectionHandler = (ws: ServerWebSocket, request: WebSocke
 
 // 带配置的 App HTTP 服务器 (支持 WebDAV、Zip 挂载、WebSocket 等插件)
 export class ConfigServer {
+  /** 同 HttpServer：running 的 server 顶住 loop，stop() 成功时释放。 */
+  private _loopRef = new LoopRef('http-server.ConfigServer')
   private _isRunning = false
   private _port = 0
   private _wsEnabled = false
@@ -447,7 +539,15 @@ export class ConfigServer {
     // 注意：auto-restart 路径不需要重复调用 —— Rust 侧 CORS_CONFIG 是全局状态，stopAppServer 不会清除
     HttpServerModule.setCorsConfig(JSON.stringify(config.cors ?? false))
     const host = this._options.host
-    const actualPort = await HttpServerModule.startServerWithConfig(port, wrappedHandler, configJson, host)
+    this._loopRef.acquire()
+    let actualPort = 0
+    try {
+      actualPort = await HttpServerModule.startServerWithConfig(port, wrappedHandler, configJson, host)
+    } catch (e) {
+      this._loopRef.release()
+      throw e
+    }
+    if (actualPort <= 0) this._loopRef.release()
     this._isRunning = actualPort > 0
     this._port = actualPort
 
@@ -467,7 +567,7 @@ export class ConfigServer {
     // 使用闭包捕获 handlers，避免 this 绑定问题
     const wsHandlers = this._wsHandlers
 
-    HttpServerModule.setWebSocketHandler((event) => {
+    const eventHandler = (event: import('./HttpServer.nitro').WebSocketEvent) => {
       let ws = webSocketConnections.get(event.connectionId)
 
       if (event.type === 'open') {
@@ -524,16 +624,55 @@ export class ConfigServer {
             break
         }
       }
-    })
+    }
+
+    HttpServerModule.setWebSocketHandler(eventHandler)
+    // 记住「最近一次装进原生侧的那个回调」：原生侧 setWebSocketHandler 是**全局单回调**
+    // （后装者胜），autoRestart 后必须按同一归属原样装回去 —— 否则重启会把回调悄悄
+    // 换给另一个来源（独立 setupWebSocketHandler 的处理器丢失，或反过来覆盖掉本类）。
+    reinstallWsHandler = eventHandler
+  }
+
+  /**
+   * 关闭并清理**模块级**连接表里的所有连接。
+   *
+   * 连接表（`webSocketConnections`）是模块级的，不清理就会一直持有已经断开的
+   * `ServerWebSocket`（死连接泄漏），且下次 `start()` 时 `getWebSocketConnections()`
+   * 会返回上一轮的对象。
+   *
+   * 为什么还要补发 `_handleClose`：native 的 close 事件要靠连接表查找才能回到对象上
+   * （见 `_setupWebSocketHandler` 的 `else if (ws)`），条目被删掉之后它就永远不会到了
+   * —— 于是 `onclose` 不触发、`readyState` 永久停在 OPEN/CLOSING（实测：stop() 之后
+   * readyState 仍是 1）。这里在删除条目的那一刻补一次，与 `close()` 的语义一致
+   * （「逻辑上已关闭」；真关闭由 native 事件再次置位，幂等）。
+   */
+  private async _closeAllWebSocketConnections(): Promise<void> {
+    for (const [id, ws] of webSocketConnections) {
+      try {
+        await ws.close(1001, 'server stopped')
+      } catch (_) { /* ignore */ }
+      // delete() 返回 false = native 的 close 事件已抢先到达并删掉了条目 —— 不重复回调
+      if (webSocketConnections.delete(id)) {
+        ws._handleClose(1001, 'server stopped')
+      }
+    }
   }
 
   async stop(): Promise<void> {
     this._intentionallyStopped = true
     this._unregisterAutoRestart()
 
+    // ⚠️ 清理连接要放在 `_isRunning` 提前返回**之前**：`isRunning()` 会把 `_isRunning`
+    // 更新成原生侧的探测结果，所以「服务已经死了 → isRunning() 返回 false → stop()」
+    // 这条**正常路径**会走提前返回。那时连接其实全都失效了，不清理就是漏一批。
+    // 另外 `stop()` 走到这里时 `_intentionallyStopped` 已经置位，说明提前返回本来
+    // 也不是「什么都不做」，只是「不需要再碰原生服务」。
+    await this._closeAllWebSocketConnections()
+
     if (!this._isRunning) return
 
     await HttpServerModule.stopAppServer()
+    this._loopRef.release()
     this._isRunning = false
     this._wsEnabled = false
     this._wsHandlers.clear()
@@ -546,18 +685,28 @@ export class ConfigServer {
   }
 
   private async _probeAlive(): Promise<boolean> {
-    try {
+    // 500ms 超时 + 失败 100ms 后重试一次：该请求会经过用户 handler，而回前台那一刻
+    // JS 线程往往正忙 —— 20ms 会把**健康**服务器判死并重启它（重启窗口内连接全断）。
+    const probe = async (): Promise<boolean> => {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 20);
-      await fetch(`http://127.0.0.1:${this._port}/`, {
-        method: 'HEAD',
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-      return true;
-    } catch {
-      return false;
-    }
+      const timeout = setTimeout(() => controller.abort(), 500);
+      try {
+        await fetch(`http://127.0.0.1:${this._port}/`, {
+          method: 'HEAD',
+          signal: controller.signal,
+        });
+        return true;
+      } catch {
+        return false;
+      } finally {
+        // 必须清：失败路径（连接被拒时 fetch 立即 reject）不清就会留下悬挂的 500ms
+        // 定时器 —— 每次探测一个，重试一次就是两个。
+        clearTimeout(timeout);
+      }
+    };
+    if (await probe()) return true;
+    await new Promise(r => setTimeout(r, 100));
+    return probe();
   }
 
   private _registerAutoRestart(): void {
@@ -580,8 +729,14 @@ export class ConfigServer {
           if (actualPort > 0) {
             this._isRunning = true
             this._port = actualPort
-            // 重新设置 WebSocket 处理器
-            if (this._wsEnabled) {
+            // 旧服务已停：连接表里的连接全部失效，摘掉（同 stop()；否则每次自动重启都漏一批）
+            await this._closeAllWebSocketConnections()
+            // 重挂 WebSocket 处理器。原生侧是全局单回调（后装者胜），必须按**重启前的
+            // 归属**重挂：无条件调 this._setupWebSocketHandler() 会把独立
+            // setupWebSocketHandler 注册的处理器挤掉（反过来也会覆盖掉 ConfigServer 的）。
+            if (reinstallWsHandler) {
+              HttpServerModule.setWebSocketHandler(reinstallWsHandler)
+            } else if (this._wsEnabled) {
               this._setupWebSocketHandler()
             }
             console.log(`[ConfigServer] Auto-restarted on port ${actualPort}`)
@@ -696,20 +851,41 @@ export class ServerWebSocket {
     return this._readyState
   }
 
-  /** 发送文本消息 */
-  async send(data: string | ArrayBuffer): Promise<boolean> {
+  /**
+   * 发送文本或二进制消息
+   *
+   * 二进制接受 `ArrayBuffer` 或**任意视图**（TypedArray / DataView / nitro-buffer 的
+   * `Buffer`）。原生侧 `wsSendBinary` 的参数类型是 `ArrayBuffer`，视图会被 Nitro 的
+   * 转换器直接拒绝（实测报 "is not an ArrayBuffer! Are you maybe passing a TypedArray
+   * (e.g. Uint8Array)? Try to pass its `.buffer` value."），所以这里先做归一化。
+   */
+  async send(data: string | ArrayBuffer | ArrayBufferView): Promise<boolean> {
     if (this._readyState !== 1) {
       throw new Error('WebSocket is not open')
     }
 
     if (typeof data === 'string') {
       return await HttpServerModule.wsSendText(this._connectionId, data)
-    } else {
-      return await HttpServerModule.wsSendBinary(this._connectionId, data)
     }
+
+    // 与 wrapHandler 相同的 view → ArrayBuffer 归一化。
+    // ⚠️ 不能无脑取 `.buffer`：Buffer / subarray 这类视图往往只覆盖底层 buffer 的一段，
+    // 直接发 `.buffer` 会把**别人的字节**也发出去。只在「整段覆盖」时才复用底层 buffer。
+    const buffer = data instanceof ArrayBuffer
+      ? data
+      : (data.byteLength === data.buffer.byteLength && data.byteOffset === 0)
+        ? data.buffer
+        : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength)
+    return await HttpServerModule.wsSendBinary(this._connectionId, buffer as ArrayBuffer)
   }
 
-  /** 关闭连接 */
+  /**
+   * 关闭连接
+   *
+   * @returns true = 关闭命令已入队（排在它之前入队的消息之后执行）；
+   *          false = 未入队（连接不存在 / 发送队列已满 / 连接已断开）。
+   *          false 时连接**其实还开着**，可以重试。
+   */
   async close(code: number = 1000, reason: string = ''): Promise<boolean> {
     if (this._readyState >= 2) {
       return false
@@ -717,7 +893,20 @@ export class ServerWebSocket {
 
     this._readyState = 2 // CLOSING
     const result = await HttpServerModule.wsClose(this._connectionId, code, reason)
-    this._readyState = 3 // CLOSED
+
+    if (result) {
+      // 已入队：send_task 会在它前面排队的消息都发完之后才真正关闭。
+      // 这里的 CLOSED 是「逻辑上不再可用」；真正的关闭由 native close 事件
+      // 经 _handleClose 再次置位（幂等）。
+      this._readyState = 3 // CLOSED
+    } else {
+      // 未入队 —— 连接并没有被关闭。若这里也置成 CLOSED，JS 侧会误以为关掉了，
+      // 而连接其实还开着（且没人会再去关它）。回退成 OPEN 让调用方可以重试：
+      // - 若连接真的已断开，随后的 send()/close() 会返回 false；
+      // - native 的 close 事件到达时 _handleClose 仍会把状态置成 CLOSED。
+      this._readyState = 1 // OPEN
+    }
+
     return result
   }
 
@@ -752,12 +941,24 @@ export class ServerWebSocket {
 /** WebSocket 连接管理器 */
 const webSocketConnections = new Map<string, ServerWebSocket>()
 
+/**
+ * 最近一次通过 `setWebSocketHandler` 装进原生侧的那个回调。
+ *
+ * 原生侧（`cpp/HybridHttpServer.cpp` 的 `g_wsHandler`）是**全局单回调，后装者胜**，
+ * 而本模块有**两个**安装入口：`ConfigServer._setupWebSocketHandler()` 与独立的
+ * `setupWebSocketHandler()`。autoRestart 重启后必须把「重启前生效的那一个」原样装回去，
+ * 否则回调归属会被换掉：独立入口注册的处理器丢失（反之也会覆盖掉 ConfigServer 的）。
+ *
+ * 这里存**回调本体**而不是「谁来安装」，是为了让重挂不依赖实例、也不需要重跑安装逻辑。
+ */
+let reinstallWsHandler: ((event: import('./HttpServer.nitro').WebSocketEvent) => void) | null = null
+
 /** 
  * 设置 WebSocket 事件处理器
  * @param handler 处理 WebSocket 事件的回调函数
  */
 export function setupWebSocketHandler(handler: (ws: ServerWebSocket, event: import('./HttpServer.nitro').WebSocketEvent) => void): void {
-  HttpServerModule.setWebSocketHandler((event) => {
+  const eventHandler = (event: import('./HttpServer.nitro').WebSocketEvent) => {
     let ws = webSocketConnections.get(event.connectionId)
 
     if (event.type === 'open') {
@@ -783,7 +984,11 @@ export function setupWebSocketHandler(handler: (ws: ServerWebSocket, event: impo
           break
       }
     }
-  })
+  }
+
+  HttpServerModule.setWebSocketHandler(eventHandler)
+  // 同 ConfigServer._setupWebSocketHandler：记住最近一次安装的回调，供 autoRestart 重挂
+  reinstallWsHandler = eventHandler
 }
 
 /** 获取所有活跃的 WebSocket 连接 */

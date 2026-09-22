@@ -654,6 +654,17 @@ interface ServerConfig {
   cors?: boolean | CorsConfig;   // CORS 配置：true = 默认（Allow-Origin: *），对象自定义，缺省关闭
   mime_types?: MimeTypesConfig;
   mounts?: Mountable[];          // 统一挂载列表
+  /**
+   * 等 JS 回调返回响应的最长时间（秒），默认 30。
+   * 长轮询 / SSE 必须调大，否则连接会被硬切断并返回 500。
+   * 这是全局状态（server 本身是单例）：只有显式传本字段才会改。
+   */
+  request_timeout_secs?: number
+  /**
+   * 回调路径的请求体上限（字节），默认 100MB。超限返回 **413** 且**不回调**你的 handler。
+   * 插件路径（static / zip / upload / webdav）不读 body，不受这个上限约束。
+   */
+  max_body_size?: number
 }
 
 interface CorsConfig {
@@ -797,6 +808,118 @@ interface ServerOptions {
 4. **JavaScript 调用**: 通过 Nitro Modules 调用 JavaScript 处理器
 5. **响应返回**: JavaScript 返回响应 → C++ → C → Rust → HTTP 客户端
 
+## ⚠️ 已知限制
+
+有意为之的行为、尚未实现的功能、以及平台约束。每条都写明**你会观察到什么**与**该怎么绕**。
+
+### 多个 callback 型服务器共享同一个原生 handler
+
+`HttpServer` / `AppServer` / `ConfigServer` 都把 handler 注册进**同一个全局槽**。
+启动第二个会**覆盖**第一个，于是**任意端口**上的请求都被路由到**最后启动**的那个 handler。
+
+```typescript
+await serverA.start(8080, handlerA);   // 此时 handlerA 生效
+await serverB.start(8081, handlerB);   // 现在两个端口都调 handlerB
+```
+
+- **正确做法**：只跑一个 callback 型服务器，用 `ConfigServer` 的 mounts
+  （`static` / `zip` / `upload` / `rewrite` / `websocket`）分流。
+- 纯静态服务器不受影响 —— `StaticServer` 从不使用那个全局槽。
+
+### Node 兼容层：超时属性不生效
+
+`server.requestTimeout` / `headersTimeout` / `keepAliveTimeout`（以及 `server.timeout`）
+只是 Node 兼容层 `Server` 上的普通属性：**可读可写，但没有任何代码读它们**，改了没有效果。
+
+要真正控制超时，请用 config server 的 `request_timeout_secs`（秒，默认 30）。
+
+### Node 兼容层：请求/响应体走 UTF-8 字符串通道
+
+`HttpRequest.body` 与 `HttpResponse.body` 都是 `string`，任何非 UTF-8 字节序列在进出时都会
+被损坏 —— **不要**用它们传二进制。
+
+两个逃生口：
+
+| 方向 | 做法 |
+| :--- | :--- |
+| 请求 | `request.binaryBody`（`ArrayBuffer`）—— **仅** `buffer_upload` 透传的请求（带 `x-upload-filename` 头）才会带上 |
+| 响应 | Node 兼容层用 `res.end(arrayBuffer)`，或让 `createHttpServer` 的 handler 返回 `ArrayBuffer` body |
+
+⚠️ 已知缺口：`res.write('a'); res.end(arrayBuffer)` 里的 `'a'` 会被**静默丢弃** ——
+二进制路径发送的是显式 body、不读累积器；串行化只保证顺序。修它需要 Rust 侧改动。
+
+### 上传插件：文件名 header 在非 ASCII 时是 percent 编码
+
+两个上传插件用的 **header 名不同**：
+
+| 插件 | 文件名 header | 标记 header |
+| :--- | :--- | :--- |
+| `buffer_upload` | `X-Upload-Filename` | `X-Upload-Filename-Encoding: percent` |
+| `upload` | `X-Uploaded-Original-Name` | `X-Uploaded-Filename-Encoding: percent` |
+
+值**只在文件名不能被 header 承载时**（非 ASCII）才 percent 编码，而标记 header
+**也只在这种情况下出现**。所以要先看标记再解码 —— 无脑 `decodeURIComponent`
+会把本来合法含 `%` 的文件名改坏：
+
+```typescript
+const name = request.headers['x-uploaded-original-name'];
+const filename = request.headers['x-uploaded-filename-encoding'] === 'percent'
+  ? decodeURIComponent(name)
+  : name;
+```
+
+### `upload` 挂载：临时文件从不清理，且只报第一个文件
+
+- 文件写进 `temp_dir` 之后就**留在那里** —— 插件从不删除它们。请把 `temp_dir` 指向
+  系统会自动回收的位置（如 caches 目录），并自行清理。
+- 一个 `multipart` 请求带多个文件时会被接受，但只有**第一个**文件的信息出现在
+  header 里（`x-uploaded-file-path` 等）。需要全部的话请自行遍历请求。
+
+### `zip` 挂载会把整个压缩包放进内存
+
+zip 挂载启动时读一次、常驻内存（之后请求零文件 I/O）。适合资源包，
+**不适合** 100MB 以上的压缩包。
+
+### WebSocket `send()` 可能返回 `false`
+
+`ws.send()` 返回 `false` 表示消息**没有入队**：连接已不在，或该连接的发送队列
+（256 条）已满。消息不会排队、也不会自动重试 —— 由调用方决定：
+
+```typescript
+if (!(await ws.send(data))) {
+  // 退避重试，或关掉这条连接
+}
+```
+
+### `getStats()` —— 6 个字段里只有 3 个是真实的
+
+| 字段 | 状态 |
+| :--- | :--- |
+| `totalRequests` | **真实** |
+| `errorCount` | **真实** —— 只统计服务器自身故障（回调超时、响应通道被关闭、静态插件 I/O 失败）。你自己的 handler 返回的 4xx/5xx **不计入** |
+| `uptime` | **真实** —— 距最近一次成功启动的秒数 |
+| `activeConnections` | 恒 `0` —— hyper 0.14 的 `Server::serve` 不暴露每连接钩子 |
+| `bytesSent` / `bytesReceived` | 恒 `0` —— 响应出口不止一个，只统计其中一部分会比报 `0` 更糟 |
+
+### 静态文件服务不支持 Range / 条件请求
+
+`Range`、`ETag`、`If-Modified-Since` 都未实现 —— 每个响应都是完整的 `200`。
+需要的话在前面挂 CDN 或反向代理。
+
+### 多个 WebSocket mount 只有最后一个可达
+
+WebSocket 插件是全局单例，配置多个 `websocket` mount 时只有最后一个能收到升级请求。
+
+### 不要混用 `onWebSocket()` 与独立的 `setupWebSocketHandler()`
+
+两者装进的是**同一个全局单回调**（后装者胜），而 `ConfigServer` 在自动重启时会重挂处理器。
+请二选一：
+
+- `server.onWebSocket('/ws', handler)` —— 按路径分发（推荐）
+- `setupWebSocketHandler(handler)` —— 一个 handler 处理全部
+
+真混用了的话：自动重启会保留**重启前最后安装**的那一个，不会再悄悄换主。
+
 ## 🔧 常见问题
 
 ### Q: 为什么服务器启动失败？
@@ -847,6 +970,10 @@ await server.start(8080, handler);
 // 静态服务器在 8081
 await server.startStaticServer(8081, staticDir);
 ```
+
+> ⚠️ 这能成立是因为 `StaticServer` 从不使用那个全局回调槽。但**两个 callback 型服务器**
+> （`HttpServer` / `AppServer` / `ConfigServer`）是另一回事 —— 它们共享同一个全局 handler，
+> 后启动的胜出。见[已知限制](#多个-callback-型服务器共享同一个原生-handler)。
 
 ### Q: 如何调试服务器问题？
 

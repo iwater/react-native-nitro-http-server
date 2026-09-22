@@ -110,6 +110,24 @@ export interface ServerConfig {
     mounts?: Mountable[]                    // 统一挂载列表
     /** CORS 配置：true 启用默认（Allow-Origin: *），对象自定义，缺省关闭 */
     cors?: boolean | CorsConfig
+    /**
+     * 等 JS 回调返回响应的最长时间（秒），默认 30。
+     * 长轮询 / SSE 场景必须调大，否则连接会被硬切断并返回 500。
+     *
+     * 注意这是**全局**状态（server 本身是全局单例）：只有显式传本字段才会改，
+     * 重启 config server 时会重新应用。
+     */
+    request_timeout_secs?: number
+    /**
+     * 回调路径的请求体上限（字节），默认 100MB。
+     *
+     * 超过就返回 **413** 且**不回调 JS**（拒绝发生在 handler 之前）。大文件上传
+     * 场景需要调大；注意插件路径（static / zip / upload / webdav 等）不读 body，
+     * 不受这个上限约束 —— 只有落到用户 handler 的请求才受限。
+     *
+     * 同样是**全局**状态：只有显式传本字段才会改，重启 config server 时会重新应用。
+     */
+    max_body_size?: number
 }
 
 // WebSocket 事件类型

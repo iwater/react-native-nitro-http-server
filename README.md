@@ -658,6 +658,18 @@ interface ServerConfig {
   cors?: boolean | CorsConfig;   // CORS config: true = default (Allow-Origin: *), object to customize, omitted = disabled
   mime_types?: MimeTypesConfig;
   mounts?: Mountable[];          // Unified mount list
+  /**
+   * How long to wait for the JS handler to return a response, in seconds (default 30).
+   * Long-polling / SSE need a larger value, otherwise the connection is cut and answered 500.
+   * Global state (the server is a singleton): only set when you pass this field.
+   */
+  request_timeout_secs?: number
+  /**
+   * Request body limit for the callback path, in bytes (default 100MB). Over the limit the
+   * request is answered **413** and your handler is never called.
+   * Plugin paths (static / zip / upload / webdav) do not read the body and are not affected.
+   */
+  max_body_size?: number
 }
 
 interface CorsConfig {
@@ -819,6 +831,126 @@ These APIs are used internally by the Node.js compatible layer for streaming sup
 4.  **JavaScript Call**: Calls JavaScript handler via Nitro Modules.
 5.  **Response Return**: JavaScript returns response → C++ → C → Rust → HTTP Client.
 
+## ⚠️ Known Limitations
+
+Intentional behavior, not-yet-implemented features, and platform constraints. Each item
+states **what you will observe** and **what to do instead**.
+
+### Multiple callback servers share one native handler
+
+`HttpServer` / `AppServer` / `ConfigServer` all register their handler into a single global
+slot. Starting a second one **overwrites** the first, so every request — on *any* port — is
+routed to the **last started** handler.
+
+```typescript
+await serverA.start(8080, handlerA);   // handlerA is live
+await serverB.start(8081, handlerB);   // now *both* ports call handlerB
+```
+
+- **Do**: run one callback server and split traffic with `ConfigServer` mounts
+  (`static` / `zip` / `upload` / `rewrite` / `websocket`).
+- Static-only servers are unaffected — `StaticServer` never uses the callback slot.
+
+### Node.js compatible layer: the timeout options are inert
+
+`server.requestTimeout` / `headersTimeout` / `keepAliveTimeout` (and `server.timeout`) are
+plain local properties of the Node-compat `Server`. They are readable and writable, but
+**nothing reads them** — changing them has no effect.
+
+Use the config server instead: `request_timeout_secs` (seconds, default 30).
+
+### Node.js compatible layer: bodies go through a UTF-8 string channel
+
+`HttpRequest.body` and `HttpResponse.body` are `string`, so any non-UTF-8 byte sequence is
+mangled on the way in or out. Do **not** push binary through them.
+
+Two escape hatches:
+
+| Direction | How |
+| :--- | :--- |
+| Request | `request.binaryBody` (`ArrayBuffer`) — populated **only** for `buffer_upload` pass-through requests (those carrying an `x-upload-filename` header) |
+| Response | `res.end(arrayBuffer)` on the Node-compat layer, or return an `ArrayBuffer` body from a `createHttpServer` handler |
+
+⚠️ Known gap: `res.write('a'); res.end(arrayBuffer)` **silently drops** the `'a'` — the
+binary path sends an explicit body and never reads the chunk accumulator; serializing the
+writes only guarantees ordering. Fixing it needs a Rust-side change.
+
+### Upload plugins: filename headers are percent-encoded when non-ASCII
+
+The two upload plugins use **different header names**:
+
+| Plugin | Filename header | Marker header |
+| :--- | :--- | :--- |
+| `buffer_upload` | `X-Upload-Filename` | `X-Upload-Filename-Encoding: percent` |
+| `upload` | `X-Uploaded-Original-Name` | `X-Uploaded-Filename-Encoding: percent` |
+
+The value is percent-encoded **only when the name is not header-readable** (non-ASCII), and
+the marker header is present **only in that case**. Check the marker before decoding —
+blindly calling `decodeURIComponent` corrupts names that legitimately contain `%`:
+
+```typescript
+const name = request.headers['x-uploaded-original-name'];
+const filename = request.headers['x-uploaded-filename-encoding'] === 'percent'
+  ? decodeURIComponent(name)
+  : name;
+```
+
+### `upload` mount: temp files are never cleaned up, and only the first file is reported
+
+- Files are written into `temp_dir` and **left there** — the plugin never deletes them. Put
+  `temp_dir` somewhere the OS reclaims (e.g. the caches directory) and clean it yourself.
+- A `multipart` request with several files is accepted, but only the **first** file is
+  reported in the headers (`x-uploaded-file-path` etc.). Loop over the request if you need
+  all of them.
+
+### `zip` mounts hold the whole archive in memory
+
+A zip mount reads the archive once and keeps it in memory (zero file I/O per request).
+Fine for asset bundles, **not** for archives larger than roughly 100MB.
+
+### WebSocket `send()` can return `false`
+
+`ws.send()` returns `false` when the message was **not** enqueued: the connection is gone,
+or the per-connection send queue (256 messages) is full. The message is not queued and not
+retried — the caller decides:
+
+```typescript
+if (!(await ws.send(data))) {
+  // back off and retry, or close the connection
+}
+```
+
+### `getStats()` — only 3 of its 6 fields are real
+
+| Field | Status |
+| :--- | :--- |
+| `totalRequests` | **real** |
+| `errorCount` | **real** — server-side failures only (callback timeout, response channel closed, static plugin I/O error). A 4xx/5xx returned by your own handler does **not** count |
+| `uptime` | **real** — seconds since the last successful start |
+| `activeConnections` | always `0` — hyper 0.14's `Server::serve` exposes no per-connection hook |
+| `bytesSent` / `bytesReceived` | always `0` — responses leave through more than one path, and counting only some of them would be worse than reporting `0` |
+
+### Static file serving has no Range / conditional requests
+
+`Range`, `ETag` and `If-Modified-Since` are not implemented — every response is a full
+`200`. Put a CDN or reverse proxy in front if you need them.
+
+### Multiple WebSocket mounts: only the last one is reachable
+
+The WebSocket plugin is a global singleton, so with several `websocket` mounts configured
+only the last one receives upgrades.
+
+### Don't mix `onWebSocket()` with the standalone `setupWebSocketHandler()`
+
+Both install into the same **global single** native callback (last writer wins), and
+`ConfigServer` re-installs a handler on auto-restart. Pick one:
+
+- `server.onWebSocket('/ws', handler)` — path-based dispatch (recommended)
+- `setupWebSocketHandler(handler)` — a single handler for everything
+
+If you do mix them, note that auto-restart preserves whichever one was installed last; it
+no longer silently switches owners.
+
 ## 🔧 FAQ
 
 ### Q: Why does the server fail to start?
@@ -867,6 +999,11 @@ await server.start(8080, handler);
 // Static server on 8081
 await server.startStaticServer(8081, staticDir);
 ```
+
+> ⚠️ This works because `StaticServer` never uses the callback slot. **Two *callback*
+> servers** (`HttpServer` / `AppServer` / `ConfigServer`) are a different story — they share
+> one global handler and the last one started wins. See
+> [Known Limitations](#multiple-callback-servers-share-one-native-handler).
 
 ### Q: How to debug server issues?
 

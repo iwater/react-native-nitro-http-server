@@ -25,8 +25,10 @@
       "rn_http_server"
     ],
     "extraLibDirs": [
-      "./lib",
       "./mac"
+    ],
+    "extraFrameworks": [
+      "CoreFoundation"
     ]
   }
 }

@@ -6,6 +6,7 @@ import { NitroModules } from 'react-native-nitro-modules';
 import { Buffer } from 'react-native-nitro-buffer';
 import { AppState, AppStateStatus } from 'react-native';
 import type { HttpServer as NitroHttpServer, HttpRequest, HttpResponse } from './HttpServer.nitro';
+import { LoopRef } from './loopRef';
 
 // ========== Types ==========
 
@@ -393,20 +394,45 @@ export class ServerResponse extends EventEmitter {
         // Mark headers as sent conceptually (though we send them at the end internally)
         this.headersSent = true;
 
-        // Perform async write to native layer
-        this._nativeServer.writeResponseChunk(this._requestId, strChunk)
-            .then(() => {
-                if (cb) cb();
-            })
-            .catch(err => {
-                this.emit('error', err);
-            });
+        // 排进串行链（不要 fire-and-forget：并发写会乱序）
+        this._enqueueNativeWrite(
+            () => this._nativeServer.writeResponseChunk(this._requestId, strChunk),
+            cb
+        );
 
         return true;
     }
 
     // Flag to track ended state
     private _ended: boolean = false;
+
+    /**
+     * 串行化原生写入，保证 chunk 顺序。
+     *
+     * 为什么必须串行：`writeResponseChunk` / `endResponse` / `sendBinaryResponse`
+     * 都是 Nitro `Promise::async`，在**线程池上并发执行**。fire-and-forget 地连发
+     * 多次 write，到达 Rust 累积器的顺序不确定 → 响应体乱序。
+     *
+     * 另外还有一条更隐蔽的后果：`writeResponseChunk` 会
+     * `accumulators.entry(request_id).or_insert_with(new)` —— 如果某个 chunk 在
+     * `end_response` / `send_response` 之后才落地，而 `cleanup_request_state`
+     * 已经跑过了，它就会**重新创建**一条没人清理的累积器条目（永久泄漏）。
+     * 串行化同时封死了这条路径。
+     */
+    private _writeChain: Promise<unknown> = Promise.resolve();
+
+    /**
+     * 把一次原生写入排进串行链。
+     *
+     * 失败不打断链：`.catch` 之后返回的是 resolved promise，后续写入照常按序执行 ——
+     * 一次 write 失败不应该让整个响应卡死（与 Node 的语义一致）。
+     */
+    private _enqueueNativeWrite<T>(op: () => Promise<T>, onDone?: () => void): void {
+        this._writeChain = this._writeChain
+            .then(() => op())
+            .then(() => { if (onDone) onDone(); })
+            .catch((err) => { this.emit('error', err); });
+    }
 
     /**
      * Ends the response
@@ -461,8 +487,20 @@ export class ServerResponse extends EventEmitter {
 
             const headersJson = JSON.stringify(headers);
 
-            this._nativeServer.sendBinaryResponse(this._requestId, this.statusCode, headersJson, buffer as ArrayBuffer)
-                .then(() => {
+            // 也排进串行链。若不走链，`sendBinaryResponse` 会抢在挂起的 write 之前 ——
+            // 而迟到的 `writeResponseChunk` 会在 cleanup 之后重建累积器条目（永久泄漏）。
+            //
+            // ⚠️ 仍有一个**未解决**的限制（需要 Rust 侧改动，本任务不处理）：
+            // `sendBinaryResponse` 最终走 `send_response`，用的是**显式 body**，
+            // 不读累积器。所以 `res.write('a'); res.end(arrayBuffer)` 里那个 'a'
+            // 会被**静默丢弃**（响应体只剩 arrayBuffer）。串行化只保证了顺序，
+            // 没有把两者拼起来。完整修需要让二进制路径也走 `write_response_chunk`
+            // + `end_response`（或让 Rust 侧 send_response 合并累积器）。
+            this._enqueueNativeWrite(
+                () => this._nativeServer.sendBinaryResponse(
+                    this._requestId, this.statusCode, headersJson, buffer as ArrayBuffer
+                ),
+                () => {
                     this._finished = true;
                     this.writableFinished = true;
                     this.emit('finish');
@@ -475,10 +513,8 @@ export class ServerResponse extends EventEmitter {
                     });
 
                     if (cb) cb();
-                })
-                .catch((err) => {
-                    this.emit('error', err);
-                });
+                }
+            );
 
             this._ended = true;
             this.writableEnded = true;
@@ -489,17 +525,19 @@ export class ServerResponse extends EventEmitter {
 
         // Write final chunk if provided (String legacy path)
         if (chunk !== undefined) {
-            // We can't use write() here directly because we want to sequence it with endResponse
-            // But write() is fire-and-forget.
-            // Ideally we should wait, but the node API is sync.
-            // We'll call native writeResponseChunk then endResponse.
-
+            // 不能直接调 write()（它会 fire-and-forget 且不与 endResponse 排序），
+            // 所以自己排进同一条链：chunk 先落地，再 endResponse。
             let strChunk = Buffer.isBuffer(chunk) ? chunk.toString(encoding) : String(chunk);
-            this._nativeServer.writeResponseChunk(this._requestId, strChunk)
-                .then(() => this._finalizeResponse(cb))
-                .catch(err => this.emit('error', err));
+            this._enqueueNativeWrite(
+                () => this._nativeServer.writeResponseChunk(this._requestId, strChunk),
+                () => this._finalizeResponse(cb)
+            );
         } else {
-            this._finalizeResponse(cb);
+            // 即使没有 chunk，endResponse 也必须排在所有挂起的 write 之后
+            this._enqueueNativeWrite(
+                () => Promise.resolve(),
+                () => this._finalizeResponse(cb)
+            );
         }
 
         this._ended = true;
@@ -571,6 +609,14 @@ export class ServerResponse extends EventEmitter {
  * Implements a subset of http.Server interface
  */
 export class Server extends EventEmitter {
+    /**
+     * Node 的 handle-ref：running 的 server 顶住事件循环。
+     * 原生 `start()` 是**真异步**的（await 之后才 emit 'listening'），宿主看不见
+     * 这个在途操作 —— 没有这个 ref 的话 loop 会先收泵，'listening' 与回调永远
+     * 不投递（实测：进程静默 exit 0，并打 "Dispatcher has already been destroyed"）。
+     */
+    private _loopRef = new LoopRef('http-server.Server');
+
     // Server state
     listening: boolean = false;
     private _port: number = 0;
@@ -645,6 +691,9 @@ export class Server extends EventEmitter {
         }
 
         // Start the native server with our request handler
+        // running 的 server 顶住 loop（Node 的 handle ref）—— 必须在调原生 start
+        // **之前**登记：它是异步的，否则 loop 会在 'listening' 之前收泵。
+        this._loopRef.acquire();
         this._nativeServer.start(port, this._handleNativeRequest.bind(this), hostname)
             .then((actualPort) => {
                 if (actualPort > 0) {
@@ -658,11 +707,14 @@ export class Server extends EventEmitter {
                     this.emit('listening');
                     if (cb) cb();
                 } else {
+                    // start 失败 = 没有 handle，不该留下 ref（漏一次泄漏一个）
+                    this._loopRef.release();
                     const err = new Error(`Failed to start server on port ${port}`);
                     this.emit('error', err);
                 }
             })
             .catch((err) => {
+                this._loopRef.release();
                 this.emit('error', err);
             });
 
@@ -685,6 +737,10 @@ export class Server extends EventEmitter {
 
         this._nativeServer.stop()
             .then(() => {
+                // handle 销毁即 unref，且在 emit('close') **之前**（'close' 回调里
+                // 可能再建 server，顺序反了会短暂误判为「还有活 handle」）。
+                // stop() 失败时不释放：server 可能还活着。
+                this._loopRef.release();
                 this.listening = false;
                 this.emit('close');
                 if (callback) callback();
@@ -701,19 +757,29 @@ export class Server extends EventEmitter {
      * after iOS background suspension or Android process recovery.
      */
     private async _probeAlive(): Promise<boolean> {
-        // 每个实例独立探测自己的端口，多实例互不干扰
-        try {
+        // 每个实例独立探测自己的端口，多实例互不干扰。
+        // 500ms 超时 + 失败 100ms 后重试一次：该请求会经过用户 handler，而回前台那一刻
+        // JS 线程往往正忙 —— 20ms 会把**健康**服务器判死并重启它（重启窗口内连接全断）。
+        const probe = async (): Promise<boolean> => {
             const controller = new AbortController();
-            const timeout = setTimeout(() => controller.abort(), 20);
-            await fetch(`http://127.0.0.1:${this._port}/`, {
-                method: 'HEAD',
-                signal: controller.signal,
-            });
-            clearTimeout(timeout);
-            return true;
-        } catch {
-            return false;
-        }
+            const timeout = setTimeout(() => controller.abort(), 500);
+            try {
+                await fetch(`http://127.0.0.1:${this._port}/`, {
+                    method: 'HEAD',
+                    signal: controller.signal,
+                });
+                return true;
+            } catch {
+                return false;
+            } finally {
+                // 必须清：失败路径（连接被拒时 fetch 立即 reject）不清就会留下悬挂的
+                // 500ms 定时器 —— 每次探测一个，重试一次就是两个。
+                clearTimeout(timeout);
+            }
+        };
+        if (await probe()) return true;
+        await new Promise(r => setTimeout(r, 100));
+        return probe();
     }
 
     private _registerAutoRestart(): void {
@@ -726,9 +792,12 @@ export class Server extends EventEmitter {
             const alive = await this._probeAlive();
             if (!alive) {
                 console.log('[http.Server] Detected server is dead, auto-restarting...');
-                try { await this._nativeServer.stop(); } catch (_) { /* ignore */ }
+                // 这条路径绕过 close()：原生 stop 成功就得把 ref 放掉，
+                // 重启成功再重新 acquire（LoopRef 是单 token 槽，幂等）。
+                try { await this._nativeServer.stop(); this._loopRef.release(); } catch (_) { /* ignore */ }
 
                 try {
+                    this._loopRef.acquire();
                     const actualPort = await this._nativeServer.start(
                         this._port,
                         this._handleNativeRequest.bind(this),
@@ -738,8 +807,11 @@ export class Server extends EventEmitter {
                         this._port = actualPort;
                         this.listening = true;
                         console.log(`[http.Server] Auto-restarted on port ${actualPort}`);
+                    } else {
+                        this._loopRef.release();
                     }
                 } catch (e) {
+                    this._loopRef.release();
                     console.error('[http.Server] Auto-restart failed:', e);
                 }
             }
@@ -816,6 +888,16 @@ export class Server extends EventEmitter {
         this._options.headersTimeout = value;
     }
 
+    /**
+     * ⚠️ 当前**不生效**，只做 Node 兼容占位。
+     *
+     * 真要改「等 JS handler 返回响应的最长等待时间」，请用 config server 的
+     * `request_timeout_secs`（单位秒，默认 30）：
+     *
+     *   createConfigServer(port, handler, { request_timeout_secs: 600 })
+     *
+     * `createServer()` 走的是 plain server 路径，不接受 config，所以在这里设多少都没用。
+     */
     get requestTimeout(): number {
         return this._options.requestTimeout || 300000;
     }

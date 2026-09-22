@@ -30,8 +30,8 @@ typedef void (*RequestCallback)(HttpRequest* request);
 /// @param port 服务器端口号
 /// @param host 监听的IP地址（例如 "127.0.0.1" 或 "0.0.0.0"）,传入NULL则默认为 "127.0.0.1"
 /// @param callback 请求回调函数，当收到请求时调用
-/// @return 如果服务器启动成功返回true，否则返回false
-bool start_server(int port, const char* host, RequestCallback callback);
+/// @return 成功返回实际端口号（>0），失败返回 <=0（注意：不是 bool）
+int start_server(int port, const char* host, RequestCallback callback);
 
 /// 发送HTTP响应
 /// 
@@ -49,7 +49,8 @@ void stop_server(void);
 
 /// 获取服务器统计信息
 /// 
-/// @return JSON格式的统计信息字符串，不需要手动释放
+/// @return JSON格式的统计信息字符串。**调用方必须用 free_string 释放**
+///         （改之前返回静态字面量的指针、不能释放；语义已翻转）
 const char* get_server_stats(void);
 
 /// 释放HttpRequest结构体及其所有字段
@@ -67,8 +68,8 @@ void free_string(char* s);
 /// @param port 服务器端口号
 /// @param host 监听的IP地址（例如 "127.0.0.1" 或 "0.0.0.0"）,传入NULL则默认为 "127.0.0.1"
 /// @param root_dir 静态文件根目录路径
-/// @return 如果服务器启动成功返回true，否则返回false
-bool start_static_server(int port, const char* host, const char* root_dir);
+/// @return 成功返回实际端口号（>0），失败返回 <=0（注意：不是 bool）
+int start_static_server(int port, const char* host, const char* root_dir);
 
 /// 停止静态文件HTTP服务器
 void stop_static_server(void);
@@ -79,8 +80,8 @@ void stop_static_server(void);
 /// @param host 监听的IP地址（例如 "127.0.0.1" 或 "0.0.0.0"）,传入NULL则默认为 "127.0.0.1"
 /// @param root_dir 静态文件根目录路径
 /// @param callback 请求回调函数，当静态文件不存在或不是GET请求时调用
-/// @return 如果服务器启动成功返回true，否则返回false
-bool start_app_server(int port, const char* host, const char* root_dir, RequestCallback callback);
+/// @return 成功返回实际端口号（>0），失败返回 <=0（注意：不是 bool）
+int start_app_server(int port, const char* host, const char* root_dir, RequestCallback callback);
 
 /// 停止App HTTP服务器
 void stop_app_server(void);
@@ -91,8 +92,8 @@ void stop_app_server(void);
 /// @param host 监听的IP地址
 /// @param callback 请求回调函数
 /// @param config_json 插件配置JSON字符串（可包含 root_dir 指定静态文件根目录）
-/// @return 如果服务器启动成功返回true，否则返回false
-bool start_server_with_config(int port, const char* host, RequestCallback callback, const char* config_json);
+/// @return 成功返回实际端口号（>0），失败返回 <=0（注意：不是 bool）
+int start_server_with_config(int port, const char* host, RequestCallback callback, const char* config_json);
 
 /// 分块读取请求body
 /// 
@@ -147,6 +148,7 @@ typedef struct WebSocketEvent {
     int binary_len;             // 二进制消息长度
     int close_code;             // 关闭代码 (仅 Close 事件)
     const char* close_reason;   // 关闭原因 (仅 Close 事件)
+    const char* error_message;  // 错误信息 (仅 Error 事件)
 } WebSocketEvent;
 
 /// WebSocket 事件回调函数类型

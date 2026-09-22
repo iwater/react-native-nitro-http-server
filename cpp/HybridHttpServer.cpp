@@ -1,5 +1,7 @@
 // cpp/HybridHttpServer.cpp
 #include "HybridHttpServer.hpp"
+#include "JsonEscape.hpp"
+#include <cctype>
 #include <iostream>
 #include <mutex>
 #include <unordered_map>
@@ -131,19 +133,12 @@ static std::string serializeHeaders(
       json += ",";
     first = false;
 
-    // 简单的 JSON 字符串转义（处理引号和反斜杠）
-    auto escapeJson = [](const std::string &str) -> std::string {
-      std::string escaped;
-      for (char c : str) {
-        if (c == '"' || c == '\\') {
-          escaped += '\\';
-        }
-        escaped += c;
-      }
-      return escaped;
-    };
-
-    json += "\"" + escapeJson(key) + "\":\"" + escapeJson(value) + "\"";
+    // JSON 字符串转义（引号、反斜杠，**以及控制字符**）。
+    // 控制字符必须转义：JSON 字符串里不允许裸控制字符（RFC 8259 §7），
+    // 漏掉的话整段 headers JSON 会被 Rust 侧 serde_json 拒收 →
+    // 这一次响应的所有响应头被静默丢弃。详见 JsonEscape.hpp。
+    json += "\"" + rn_http_server_json::escapeJsonString(key) + "\":\"" +
+            rn_http_server_json::escapeJsonString(value) + "\"";
   }
   json += "}";
   return json;
@@ -227,7 +222,11 @@ static void c_request_callback(::HttpRequest *cRequest) {
 
         while (pos < jsonStr.length() - 1) {
           // Skip whitespace
-          while (pos < jsonStr.length() && std::isspace(jsonStr[pos]))
+          // 必须转 unsigned char：std::isspace 的参数要求可表示为 unsigned char
+          // 或 EOF，直接传 signed char 在字节 ≥ 0x80 时是 UB
+          // （arm64/x86 macOS 上 char 是 signed，会变成负数）
+          while (pos < jsonStr.length() &&
+                 std::isspace(static_cast<unsigned char>(jsonStr[pos])))
             pos++;
 
           if (pos >= jsonStr.length() - 1 || jsonStr[pos] == '}')
@@ -254,7 +253,8 @@ static void c_request_callback(::HttpRequest *cRequest) {
 
           // Skip whitespace and colon
           while (pos < jsonStr.length() &&
-                 (std::isspace(jsonStr[pos]) || jsonStr[pos] == ':'))
+                 (std::isspace(static_cast<unsigned char>(jsonStr[pos])) ||
+                  jsonStr[pos] == ':'))
             pos++;
 
           // Parse value
@@ -277,35 +277,16 @@ static void c_request_callback(::HttpRequest *cRequest) {
           pos++; // Skip closing quote
 
           // Unescape common JSON escape sequences
-          auto unescape = [](const std::string &str) -> std::string {
-            std::string result;
-            for (size_t i = 0; i < str.length(); i++) {
-              if (str[i] == '\\' && i + 1 < str.length()) {
-                char next = str[i + 1];
-                if (next == '"' || next == '\\' || next == '/') {
-                  result += next;
-                  i++;
-                } else if (next == 'n') {
-                  result += '\n';
-                  i++;
-                } else if (next == 't') {
-                  result += '\t';
-                  i++;
-                } else {
-                  result += str[i];
-                }
-              } else {
-                result += str[i];
-              }
-            }
-            return result;
-          };
-
-          request.headers[unescape(key)] = unescape(value);
+          // 还原转义序列。与序列化侧（escapeJsonString）必须对称：
+          // 原来这里只处理 \" \\ \/ \n \t，漏了 \r \b \f 与 \uXXXX ——
+          // 那些转义会被原样留成字面字符（静默值错）。详见 JsonEscape.hpp。
+          request.headers[rn_http_server_json::unescapeJsonString(key)] =
+              rn_http_server_json::unescapeJsonString(value);
 
           // Skip whitespace and comma
           while (pos < jsonStr.length() &&
-                 (std::isspace(jsonStr[pos]) || jsonStr[pos] == ','))
+                 (std::isspace(static_cast<unsigned char>(jsonStr[pos])) ||
+                  jsonStr[pos] == ','))
             pos++;
         }
       }
@@ -486,10 +467,6 @@ std::shared_ptr<Promise<void>> HybridHttpServer::stop() {
 
 std::shared_ptr<Promise<ServerStats>> HybridHttpServer::getStats() {
   return Promise<ServerStats>::async([]() -> ServerStats {
-    const char *statsJson = get_server_stats();
-
-    // TODO: 解析 JSON 字符串为 ServerStats 结构体
-    // 暂时返回默认值
     ServerStats stats;
     stats.totalRequests = 0;
     stats.activeConnections = 0;
@@ -497,6 +474,48 @@ std::shared_ptr<Promise<ServerStats>> HybridHttpServer::getStats() {
     stats.bytesReceived = 0;
     stats.uptime = 0;
     stats.errorCount = 0;
+
+    const char *statsJson = get_server_stats();
+    if (statsJson == nullptr) {
+      return stats;
+    }
+
+    // 解析 `"key":<数字>` 形式的字段。
+    // 为什么手写而不引 JSON 库：这里只需要 6 个**数字**字段，且
+    // `JsonEscape.hpp` 已有同类的手写解析先例；引入 nlohmann 会给整个 pod 加依赖。
+    //
+    // ⚠️ 内存所有权：get_server_stats 返回的是**堆分配**字符串（Rust 侧
+    // CString::into_raw），必须 free_string —— 改之前它返回静态字面量、不能释放。
+    std::string json(statsJson);
+    free_string(const_cast<char *>(statsJson));
+
+    auto readNumber = [&json](const char *key, double *out) {
+      const std::string needle = std::string("\"") + key + "\":";
+      size_t pos = json.find(needle);
+      if (pos == std::string::npos) return;
+      pos += needle.size();
+      while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+      size_t end = pos;
+      while (end < json.size() &&
+             ((json[end] >= '0' && json[end] <= '9') || json[end] == '.' ||
+              json[end] == '-' || json[end] == '+' || json[end] == 'e' ||
+              json[end] == 'E')) {
+        end++;
+      }
+      if (end == pos) return;
+      try {
+        *out = std::stod(json.substr(pos, end - pos));
+      } catch (...) {
+        // 解析失败就保留默认值 0 —— 统计信息不该让 getStats() 整体失败
+      }
+    };
+
+    readNumber("totalRequests", &stats.totalRequests);
+    readNumber("activeConnections", &stats.activeConnections);
+    readNumber("bytesSent", &stats.bytesSent);
+    readNumber("bytesReceived", &stats.bytesReceived);
+    readNumber("uptime", &stats.uptime);
+    readNumber("errorCount", &stats.errorCount);
 
     return stats;
   });
@@ -785,6 +804,11 @@ static void c_websocket_callback(const ::WebSocketEvent *cEvent) {
     }
     if (cEvent->close_reason) {
       event.closeReason = std::string(cEvent->close_reason);
+    }
+
+    // 错误信息（仅 Error 事件）。不填的话 TS 侧只能拿到 "Unknown error"。
+    if (cEvent->error_message) {
+      event.errorMessage = std::string(cEvent->error_message);
     }
 
     // 调用 JavaScript 处理器
