@@ -7,6 +7,8 @@ import { Buffer } from 'react-native-nitro-buffer';
 import { AppState, AppStateStatus } from 'react-native';
 import type { HttpServer as NitroHttpServer, HttpRequest, HttpResponse } from './HttpServer.nitro';
 import { LoopRef } from './loopRef';
+import { awaitPendingNativeStop, stopWithTracking, trackNativeStop } from './nativeStopQueue';
+import { installRequestAbortedHandler, trackRequest, untrackRequest } from './requestAbort';
 
 // ========== Types ==========
 
@@ -108,6 +110,19 @@ export class IncomingMessage extends EventEmitter {
     // Stream state
     readable: boolean = true;
     complete: boolean = false;
+
+    /**
+     * 客户端在响应发出前断开连接（Node: `IncomingMessage#aborted`，v17 起已废弃但仍
+     * 是广泛使用的判据）。
+     *
+     * ⚠️ 与 `complete` **不是**互补关系：`complete` 只表示「请求体读完了」，
+     * 客户端断开时它同样可能已经是 true（完整请求已收到、handler 还在跑）——
+     * 所以**不能**拿 `complete` 当「没被中断」的代理。
+     */
+    aborted: boolean = false;
+
+    /** 底层连接已销毁（Node: `req.destroyed`） */
+    destroyed: boolean = false;
 
     // Internal
     private _requestId: string;
@@ -224,6 +239,33 @@ export class IncomingMessage extends EventEmitter {
         return this;
     }
 
+    /**
+     * 收到原生「客户端断开」通知时调用（只由 `requestAbort.ts` 的中枢调）。
+     *
+     * 事件顺序**对齐 Node 22 实测**（`req:aborted` → `req:error:ECONNRESET` →
+     * `req:close`；`res:close` 由 `ServerResponse._handleAborted` 发）。
+     *
+     * ⚠️ `'error'` 只在**已经有监听器**时才发 —— 这是 Node 自己的做法
+     * （实测：同一场景挂 `req.on('error')` 会收到 ECONNRESET，不挂就完全不发），
+     * 照抄是为了对齐 Node 的可观测行为。
+     * ⚠️ 注意**不是**为了防崩：本模块的 `EventEmitter` 是 `eventemitter3`，
+     * 它对未处理的 `'error'` **不抛**（实测），与 Node 的 `EventEmitter` 不同。
+     */
+    _handleAborted(): void {
+        if (this.aborted) return;
+        this.aborted = true;
+        this.destroyed = true;
+        this.readable = false;
+        this.emit('aborted');
+        if (this.listenerCount('error') > 0) {
+            const err = new Error('aborted') as Error & { code?: string };
+            // 与 Node 的 connResetException('aborted') 一致
+            err.code = 'ECONNRESET';
+            this.emit('error', err);
+        }
+        this.emit('close');
+    }
+
     // Pipe support (basic)
     pipe<T extends NodeJS.WritableStream>(destination: T): T {
         this.on('data', (chunk) => destination.write(chunk));
@@ -262,6 +304,14 @@ export class ServerResponse extends EventEmitter {
     writable: boolean = true;
     writableEnded: boolean = false;
     writableFinished: boolean = false;
+
+    /**
+     * 响应通道已失效（Node: `res.destroyed`）。
+     *
+     * 客户端断开时置 true —— 注意 Node 此时**不**动 `writableEnded`
+     * （实测断开后 `res.writableEnded === false`），所以两者不要混用。
+     */
+    destroyed: boolean = false;
 
     constructor(
         requestId: string,
@@ -599,6 +649,21 @@ export class ServerResponse extends EventEmitter {
         return this._finished;
     }
 
+    /**
+     * 收到原生「客户端断开」通知时调用（只由 `requestAbort.ts` 的中枢调）。
+     *
+     * ⚠️ 刻意**不**改 `writableEnded` / `_finished`：Node 在断开后这两个仍是原值
+     * （实测 `res.writableEnded === false`、`res.finished === false`）。
+     * `res.end()` 之后再写的语义也保持原样（Node 实测：断开后 `write`/`end`
+     * 都**不抛**，静默丢弃）。
+     */
+    _handleAborted(): void {
+        if (this.destroyed) return;
+        this.destroyed = true;
+        this.writable = false;
+        this.emit('close');
+    }
+
 
 }
 
@@ -694,7 +759,13 @@ export class Server extends EventEmitter {
         // running 的 server 顶住 loop（Node 的 handle ref）—— 必须在调原生 start
         // **之前**登记：它是异步的，否则 loop 会在 'listening' 之前收泵。
         this._loopRef.acquire();
-        this._nativeServer.start(port, this._handleNativeRequest.bind(this), hostname)
+        // 装「客户端断开」处理器（幂等）。原生侧是全局单回调，装一次即可；
+        // auto-restart 路径不需要重装（Rust 的注册表是进程级静态）。
+        installRequestAbortedHandler(this._nativeServer);
+        // 等上一次原生 stop 落定再起：原生 server 是单例，停还没停完就起会撞车
+        // —— 新 server 会报出端口但请求完全拿不到响应（见 nativeStopQueue.ts）。
+        awaitPendingNativeStop()
+            .then(() => this._nativeServer.start(port, this._handleNativeRequest.bind(this), hostname))
             .then((actualPort) => {
                 if (actualPort > 0) {
                     this._port = actualPort;
@@ -735,7 +806,10 @@ export class Server extends EventEmitter {
             return this;
         }
 
-        this._nativeServer.stop()
+        const stopping = this._nativeServer.stop();
+        // 登记给后续 start 等待（原生 server 是单例，跨实例也要守）
+        trackNativeStop(stopping);
+        stopping
             .then(() => {
                 // handle 销毁即 unref，且在 emit('close') **之前**（'close' 回调里
                 // 可能再建 server，顺序反了会短暂误判为「还有活 handle」）。
@@ -794,7 +868,7 @@ export class Server extends EventEmitter {
                 console.log('[http.Server] Detected server is dead, auto-restarting...');
                 // 这条路径绕过 close()：原生 stop 成功就得把 ref 放掉，
                 // 重启成功再重新 acquire（LoopRef 是单 token 槽，幂等）。
-                try { await this._nativeServer.stop(); this._loopRef.release(); } catch (_) { /* ignore */ }
+                try { await stopWithTracking(this._nativeServer.stop()); this._loopRef.release(); } catch (_) { /* ignore */ }
 
                 try {
                     this._loopRef.acquire();
@@ -845,7 +919,20 @@ export class Server extends EventEmitter {
             // Create Node.js compatible request/response objects
             // Pass the native server instance for streaming data access
             const req = new IncomingMessage(request, this._nativeServer);
-            const res = new ServerResponse(request.requestId, this._nativeServer, resolve);
+            const res = new ServerResponse(request.requestId, this._nativeServer, (response) => {
+                // handler 落定 → 摘掉中断登记（正常路径不会再有中断通知）
+                untrackRequest(request.requestId);
+                resolve(response);
+            });
+
+            // 登记中断状态，并把原生通知路由到这一对 req/res 上。
+            // 时序：必须在 emit('request') **之前**装好 —— 用户的 requestListener
+            // 一进来就可能 await，期间客户端断开就得能收到。
+            const abortEntry = trackRequest(request.requestId);
+            abortEntry.listeners.add(() => {
+                req._handleAborted();
+                res._handleAborted();
+            });
 
             // Emit request event
             this.emit('request', req, res);

@@ -17,6 +17,7 @@
 - 💾 **Buffer Upload 插件**: 在内存中处理文件上传，支持直接访问 `ArrayBuffer`
 - 🔀 **URL 重写插件**: 支持基于正则表达式的 URL 重写
 - 🔌 **WebSocket 插件**: 实时双向通信，支持获取完整的握手信息
+- ⛔ **感知客户端断开**: `request.signal` / `req.aborted` / `res.destroyed`，可据此取消下游操作
 - 🔄 **Node.js 兼容**: 兼容 Node.js `http` 模块 API
 
 ## 📦 安装
@@ -280,6 +281,53 @@ await server.start(8080, httpHandler, {
     mounts: [{ type: 'websocket', path: '/ws' }]
 });
 ```
+
+### 感知客户端断开（`req.aborted` / `request.signal`）
+
+客户端在 handler 返回响应之前断开（关页面 / 取消请求 / 网络断了）时，此前 JS 侧
+**完全收不到通知** —— 只能在发送响应失败或等到 `request_timeout_secs` 超时时才间接察觉。
+现在两条路径都有信号：
+
+```typescript
+// ① 高层 handler：用 signal（推荐 —— 能直接喂给 fetch / 下游 SDK 的取消参数）
+import { HttpServer } from 'react-native-nitro-http-server';
+
+const server = new HttpServer();
+await server.start(8080, async (req) => {
+    try {
+        // 客户端断开时这个 fetch 会被取消，不必等它自己超时
+        const r = await fetch('https://upstream.example/api', { signal: req.signal });
+        return { statusCode: 200, body: await r.text() };
+    } catch (e) {
+        if (req.signal?.aborted) return { statusCode: 499, body: 'client closed request' };
+        throw e;
+    }
+});
+
+// ② Node 兼容层：req.aborted / 'aborted' 事件 / res.destroyed
+import { createServer } from 'react-native-nitro-http-server';
+
+const nodeServer = createServer((req, res) => {
+    req.on('aborted', () => console.log('客户端走了'));
+    longQuery().then((data) => {
+        if (req.aborted) return;          // 结果已经没人要了
+        res.end(data);
+    });
+});
+```
+
+与 Node 的对齐（下表逐项是 Node 22 实测值）：
+
+| 信号 | 本模块 | Node 22 |
+| :--- | :--- | :--- |
+| `req.aborted` | ✅ | ✅ |
+| `req.on('aborted')` | ✅ | ✅（v17 起已废弃） |
+| `req.destroyed` / `res.destroyed` | ✅ | ✅ |
+| `res.on('close')` | ✅ | ✅ |
+| `req.on('error')`（`code === 'ECONNRESET'`） | ✅ 仅在**已有** `'error'` 监听器时发 | ✅ 同样只在有监听器时发 |
+| `request.signal` | ✅ **本模块扩展** | ❌ `http.IncomingMessage` 上没有这个属性 |
+
+⚠️ 触发时机**只在「响应从未发出」时**：正常回完、handler 抛异常、请求超时都**不会**触发。
 
 ### RESTful API 示例
 
@@ -657,12 +705,18 @@ interface ServerConfig {
   /**
    * 等 JS 回调返回响应的最长时间（秒），默认 30。
    * 长轮询 / SSE 必须调大，否则连接会被硬切断并返回 500。
-   * 这是全局状态（server 本身是单例）：只有显式传本字段才会改。
+   *
+   * ⚠️ **粘性全局**（见「已知限制」）：只在**传了本字段**时才写入 ——
+   * 于是先前某个 server 设过的值会**继续作用于之后不传该字段的 server**。
+   * 想复位就显式传 30。
    */
   request_timeout_secs?: number
   /**
    * 回调路径的请求体上限（字节），默认 100MB。超限返回 **413** 且**不回调**你的 handler。
    * 插件路径（static / zip / upload / webdav）不读 body，不受这个上限约束。
+   *
+   * ⚠️ **粘性全局**（见「已知限制」）：与 `request_timeout_secs` 同理。
+   * 想复位就显式传 `100 * 1024 * 1024`。
    */
   max_body_size?: number
 }
@@ -812,6 +866,45 @@ interface ServerOptions {
 
 有意为之的行为、尚未实现的功能、以及平台约束。每条都写明**你会观察到什么**与**该怎么绕**。
 
+### `server.close()` 是异步的（stop→start 的顺序模块已替你排好）
+
+`close()` 只是**发起**原生 stop 就返回；`'close'` 事件与 `close(cb)` 回调要等
+**原生侧真的停完**才触发。
+
+由于原生 server 是**单例**，落在这个窗口里的 `start()` 过去会与那次拆卸撞车：
+新 server 正常报出端口，但**它的请求完全拿不到响应**（客户端看到连接/读取失败，
+不是 500）—— 而且是**偶发**，看起来就像"测试抖动"。
+
+**2026-09-22 已修** —— `start()` 现在会先等所有在飞的原生 stop 落定再继续
+（`src/nativeStopQueue.ts`），于是 Node 那种写法重新变安全：
+
+```typescript
+oldServer.close();
+newServer.listen(8080);   // ✓ 安全了 —— start() 会等在飞的 stop
+```
+
+真机已验证（真机 RN 套件的 D11 就是**故意**这么写的）。
+你自己的代码里若想要显式的顺序保证，仍然可以 `await new Promise(r => old.close(() => r()))`，
+没有代价。
+
+### `request.signal` 需要宿主提供 `AbortController`
+
+`request.signal`（以及它背后的 `AbortController`）**只在宿主实现了它时才存在**：
+
+- **React Native 有** —— `Libraries/Core/setUpXHR.js` 里有
+  `polyfillGlobal('AbortController', …)`，所以真机上正常可用；
+- **无头 JS 宿主一般没有** —— 本模块做端到端验证的那个无头宿主实测
+  `typeof globalThis.AbortController === 'undefined'`。
+
+那种环境下 `req.signal` 就是 `undefined`，**其余中断信号照常工作**
+（`req.aborted` / `'aborted'` / `res.destroyed` 都不依赖 `AbortController`）。
+
+→ 用之前判一下：`if (req.signal) { ... }`，或者用可选链 `req.signal?.aborted`。
+判据是 `typeof AbortController === 'undefined'`。
+
+模块刻意**不做**内部兜底实现：一个只在测试宿主上跑得起来的自制 signal，
+会让用例验的不是真东西。
+
 ### 多个 callback 型服务器共享同一个原生 handler
 
 `HttpServer` / `AppServer` / `ConfigServer` 都把 handler 注册进**同一个全局槽**。
@@ -874,6 +967,25 @@ const filename = request.headers['x-uploaded-filename-encoding'] === 'percent'
   系统会自动回收的位置（如 caches 目录），并自行清理。
 - 一个 `multipart` 请求带多个文件时会被接受，但只有**第一个**文件的信息出现在
   header 里（`x-uploaded-file-path` 等）。需要全部的话请自行遍历请求。
+
+### `request_timeout_secs` / `max_body_size` 是**粘性全局**
+
+两者都存在原生全局里，而且**只在传了对应字段时**才被写入（`global.rs` / `app_server.rs`）。
+`stop()` 不会复位它们，所以某个 server 设过的值会**继续作用于之后每一个 server** ——
+哪怕后来那个完全不传这两个字段：
+
+```typescript
+await cfgA.start(0, h, { max_body_size: 1024 });   // 1 KB 上限
+await cfgA.stop();
+await HttpServerModule.start(0, h);                // 完全不传 config —— 仍是 1 KB！
+// → 这时一个 1 MB 的 POST 会拿到 413
+```
+
+很容易踩：一个页面为了做上传测试把 `max_body_size` 设得很小，另一个页面以为还是默认值。
+**只要你的 app 会起多个 server，每次都把想要的值显式传上**（或显式复位）。
+
+> 这条是真机 RN 套件跑出来的 —— mounts 套件设过
+> `max_body_size: 1024` 之后，「核心」套件里的 1 MB POST 就开始返 413。
 
 ### `zip` 挂载会把整个压缩包放进内存
 
@@ -988,6 +1100,24 @@ curl http://localhost:8080/api/test
 ```
 
 ## 📝 更新日志
+
+### Unreleased
+
+- **新增：客户端断开时通知 JS。** 客户端在 handler 返回响应之前断开时，此前 JS 侧收不到
+  任何信号 —— 只能靠「发送响应失败」或等 `request_timeout_secs` 超时来间接察觉。现在有
+  两条路径：高层 handler 拿 `request.signal`（可直接喂给 `fetch` / 下游 SDK 的取消参数），
+  Node 兼容层拿 `req.aborted` / `'aborted'` 事件 / `res.destroyed`。
+  除 `request.signal`（本模块扩展，Node 的 `IncomingMessage` 没有）外逐项与 **Node 22 实测**
+  对齐。**只在「响应从未发出」时触发** —— 正常回完 / handler 抛异常 / 请求超时都不触发。
+  跨四层实现（Rust 判定 → C 头 → C++ 回调 → Nitro 切线程 → TS）。
+- **修复 `close()` → `start()` 的竞态**：原生 server 是**单例**，而 `close()` 只**发起**
+  原生 stop（`'close'` 回调要等原生停完才触发）。落在这个窗口里的 `start()` 会与那次拆卸
+  撞车 —— 新 server 正常报出端口，但**请求完全拿不到响应**（客户端看到连接/读取失败，
+  不是 500），且**偶发**，看起来就像测试抖动。现在 `start()` 会先等所有在飞的原生 stop
+  落定（`src/nativeStopQueue.ts`）。真机已验证（真机 RN 套件 D11）。
+- **文档修正**：`request_timeout_secs` / `max_body_size` 标注为**粘性全局** —— 它们只在
+  **传了字段**时才写入，`stop()` 不复位，所以某个 server 设过的值会继续作用于之后
+  不传该字段的 server。真机套件跑出来的（一轮里 1MB POST 突然变 413）。
 
 ### 1.9.0
 

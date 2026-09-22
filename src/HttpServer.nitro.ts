@@ -273,6 +273,25 @@ export interface HttpServer extends HybridObject<{
      */
     startServerWithConfig(port: number, handler: RequestHandler, configJson: string, host?: string): Promise<number>
 
+    // ==================== 请求中断通知 ====================
+
+    /**
+     * 设置「请求被客户端中断」处理器。
+     *
+     * 客户端在 handler 还没返回响应时断开连接（关标签页 / 取消请求 / 网络断了），
+     * 原生侧会**丢弃 handler future**，此前 JS 侧完全收不到通知 —— 只能在发送响应
+     * 失败或等到 `request_timeout_secs` 超时时才间接察觉。
+     *
+     * 现在注册这个处理器就能在断开的那一刻拿到 `requestId`（回调自动切回 JS 线程）。
+     * 典型用法是中止这个请求正在等的下游操作（DB 查询 / 上游 fetch）。
+     *
+     * ⚠️ 与 `setWebSocketHandler` 一样是**全局单回调，后装者胜**。
+     * ⚠️ 只在「响应从未发出」时触发 —— 正常回完、超时、handler 抛异常都不会触发。
+     *
+     * @param handler 收到被中断请求的 requestId
+     */
+    setRequestAbortedHandler(handler: (requestId: string) => void): void
+
     // ==================== WebSocket API ====================
 
     /**

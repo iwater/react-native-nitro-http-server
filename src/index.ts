@@ -3,14 +3,32 @@ import { AppState, AppStateStatus } from 'react-native'
 import type { HttpServer as NitroHttpServer, HttpRequest, HttpResponse as NitroHttpResponse, ServerConfig, CorsConfig } from './HttpServer.nitro'
 import { createServer } from './http'
 import { LoopRef } from './loopRef'
+import { awaitPendingNativeStop, stopWithTracking } from './nativeStopQueue'
+import { installRequestAbortedHandler, trackRequest, untrackRequest } from './requestAbort'
 
 // Redefine HttpResponse for User (User sees unified body)
 export interface HttpResponse extends Omit<NitroHttpResponse, 'body' | 'binaryBody'> {
   body?: string | ArrayBuffer
 }
 
+/**
+ * 交给用户 handler 的请求对象 = 原生 `HttpRequest` + 本模块补的 `signal`。
+ *
+ * ⚠️ `signal` 是**本模块的扩展**，不是 Node 的：Node 22 的 `http.IncomingMessage`
+ * 上**没有** `signal`（实测 `'signal' in req === false`），只有 `aborted` 属性与
+ * `'aborted'` 事件。这里额外给一个 `AbortSignal` 是为了能直接喂给
+ * `fetch(url, { signal })` / 下游 SDK 的取消参数。
+ *
+ * ⚠️ 宿主没有 `AbortController` 时（quickjs 的两个 headless runner）它是 `undefined`
+ * —— 见 `requestAbort.ts` 的文件头。用之前判一下。
+ */
+export interface HttpRequestWithSignal extends HttpRequest {
+  /** 客户端断开（响应发出前）时被 abort */
+  readonly signal?: AbortSignal
+}
+
 // Redefine RequestHandler to use local HttpResponse
-export type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResponse
+export type RequestHandler = (request: HttpRequestWithSignal) => Promise<HttpResponse> | HttpResponse
 
 // 启动选项
 export interface ServerOptions {
@@ -36,39 +54,54 @@ const HttpServerModule = NitroModules.createHybridObject<NitroHttpServer>("HttpS
 
 // Helper function to wrap handler and intercept binary body
 const wrapHandler = (handler: RequestHandler): (request: HttpRequest) => Promise<NitroHttpResponse> => {
+  // 把「客户端断开」的处理器装进原生侧（幂等）。放在这里而不是模块顶层：
+  // 只在真正要起服务的那一刻才碰原生模块，纯 import 的用例不受影响。
+  installRequestAbortedHandler(HttpServerModule)
+
   return async (request: HttpRequest) => {
-    const response = await handler(request)
+    // 登记中断状态并给 request 挂 signal。
+    // 时序要点：登记发生在**调用户 handler 之前**，所以 handler 里任何 await
+    // 期间客户端断开都收得到通知；handler 落定后立刻摘掉。
+    const abortEntry = trackRequest(request.requestId)
+    const mutableRequest = request as HttpRequest & { signal?: AbortSignal }
+    mutableRequest.signal = abortEntry.signal
 
-    // If response body is binary (ArrayBuffer or View), send it safely via the direct API
-    if (response.body && typeof response.body === 'object' &&
-      (response.body instanceof ArrayBuffer || ArrayBuffer.isView(response.body))) {
+    try {
+      const response = await handler(mutableRequest)
 
-      const binaryBody = response.body as ArrayBuffer | ArrayBufferView;
-      const buffer = binaryBody instanceof ArrayBuffer
-        ? binaryBody
-        : (binaryBody.byteLength === binaryBody.buffer.byteLength && binaryBody.byteOffset === 0)
-          ? binaryBody.buffer
-          : binaryBody.buffer.slice(binaryBody.byteOffset, binaryBody.byteOffset + binaryBody.byteLength);
+      // If response body is binary (ArrayBuffer or View), send it safely via the direct API
+      if (response.body && typeof response.body === 'object' &&
+        (response.body instanceof ArrayBuffer || ArrayBuffer.isView(response.body))) {
 
-      const headers = response.headers || {}
-      const headersJson = JSON.stringify(headers)
-      // Use the safe native method that copies data on JS thread
-      await HttpServerModule.sendBinaryResponse(
-        request.requestId,
-        response.statusCode,
-        headersJson,
-        buffer as ArrayBuffer
-      )
-      // Return a dummy response to satisfy the native promise
-      return {
-        statusCode: response.statusCode,
-        headers: response.headers,
-        body: '' // Body handled via sendBinaryResponse
+        const binaryBody = response.body as ArrayBuffer | ArrayBufferView;
+        const buffer = binaryBody instanceof ArrayBuffer
+          ? binaryBody
+          : (binaryBody.byteLength === binaryBody.buffer.byteLength && binaryBody.byteOffset === 0)
+            ? binaryBody.buffer
+            : binaryBody.buffer.slice(binaryBody.byteOffset, binaryBody.byteOffset + binaryBody.byteLength);
+
+        const headers = response.headers || {}
+        const headersJson = JSON.stringify(headers)
+        // Use the safe native method that copies data on JS thread
+        await HttpServerModule.sendBinaryResponse(
+          request.requestId,
+          response.statusCode,
+          headersJson,
+          buffer as ArrayBuffer
+        )
+        // Return a dummy response to satisfy the native promise
+        return {
+          statusCode: response.statusCode,
+          headers: response.headers,
+          body: '' // Body handled via sendBinaryResponse
+        }
       }
-    }
 
-    // String body or empty
-    return response as NitroHttpResponse
+      // String body or empty
+      return response as NitroHttpResponse
+    } finally {
+      untrackRequest(request.requestId)
+    }
   }
 }
 
@@ -88,6 +121,8 @@ export class HttpServer {
   private _intentionallyStopped = false
 
   async start(port: number, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<number> {
+    // 等上一次原生 stop 落定：原生 server 是单例，停还没停完就起会撞车（见 nativeStopQueue.ts）
+    await awaitPendingNativeStop()
     if (this._isRunning) {
       throw new Error('Server is already running')
     }
@@ -129,7 +164,7 @@ export class HttpServer {
 
     if (!this._isRunning) return
 
-    await HttpServerModule.stop()
+    await stopWithTracking(HttpServerModule.stop())
     this._loopRef.release()
     this._isRunning = false
   }
@@ -233,6 +268,7 @@ export class StaticServer {
   private _intentionallyStopped = false
 
   async start(port: number, rootDir: string, hostOrOptions?: string | ServerOptions): Promise<number> {
+    await awaitPendingNativeStop()
     if (this._isRunning) {
       throw new Error('Static server is already running')
     }
@@ -271,7 +307,7 @@ export class StaticServer {
 
     if (!this._isRunning) return
 
-    await HttpServerModule.stopStaticServer()
+    await stopWithTracking(HttpServerModule.stopStaticServer())
     this._loopRef.release()
     this._isRunning = false
   }
@@ -360,6 +396,7 @@ export class AppServer {
   private _intentionallyStopped = false
 
   async start(port: number, rootDir: string, handler: RequestHandler, hostOrOptions?: string | ServerOptions): Promise<number> {
+    await awaitPendingNativeStop()
     if (this._isRunning) {
       throw new Error('App server is already running')
     }
@@ -400,7 +437,7 @@ export class AppServer {
 
     if (!this._isRunning) return
 
-    await HttpServerModule.stopAppServer()
+    await stopWithTracking(HttpServerModule.stopAppServer())
     this._loopRef.release()
     this._isRunning = false
   }
@@ -516,6 +553,7 @@ export class ConfigServer {
   }
 
   async start(port: number, handler: RequestHandler, config: ServerConfig, hostOrOptions?: string | ServerOptions): Promise<number> {
+    await awaitPendingNativeStop()
     if (this._isRunning) {
       throw new Error('Config server is already running')
     }
@@ -671,7 +709,7 @@ export class ConfigServer {
 
     if (!this._isRunning) return
 
-    await HttpServerModule.stopAppServer()
+    await stopWithTracking(HttpServerModule.stopAppServer())
     this._loopRef.release()
     this._isRunning = false
     this._wsEnabled = false
@@ -819,6 +857,9 @@ export function setCorsConfig(config: boolean | CorsConfig): void {
 export type { HttpRequest, ServerConfig, CorsConfig, DirListConfig, Mountable, WebDavMount, ZipMount, StaticMount, UploadMount, BufferUploadMount, RewriteMount, RewriteRule, WebSocketMount, WebSocketEvent, WebSocketEventType, WebSocketHandler } from './HttpServer.nitro'
 
 export { HttpServerModule }
+
+/** 当前登记中的「在飞请求」数量（诊断用；正常应回落到 0） */
+export { pendingRequestCount } from './requestAbort'
 
 // ==================== WebSocket API ====================
 

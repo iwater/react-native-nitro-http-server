@@ -724,6 +724,57 @@ std::shared_ptr<Promise<bool>> HybridHttpServer::sendBinaryResponse(
   });
 }
 
+// ==================== 请求中断通知 ====================
+
+// 全局「请求被客户端中断」处理器（原生 server 是单例，所以只有一个）
+static std::function<void(const std::string &)> g_abortHandler;
+static std::mutex g_abortHandlerMutex;
+
+// C 回调：由 Rust 在**原生线程**上调用（见 rn_http_server.h 的说明）。
+//
+// 这里为什么**不需要**手动切回 JS 线程：`g_abortHandler` 的静态类型是
+// `std::function<void(const std::string &)>`，Nitro 的 JSIConverter 对它生成的实现是
+// `AsyncJSCallback`（判据是 `is_promise_v<R> || std::is_void_v<R>`，void 命中），
+// 而 `AsyncJSCallback::operator()` 直接走 `Dispatcher::runAsync` —— 线程编组由 Nitro
+// 负责。与既有的 `c_websocket_callback` 同形（那条链路已真机验证）。
+// 反过来，若在这里再调一次 ThreadUtils 就会变成**双重投递**。
+static void c_request_aborted_callback(const char *requestId) {
+  if (!requestId) {
+    return;
+  }
+
+  std::function<void(const std::string &)> handler;
+  {
+    std::lock_guard<std::mutex> lock(g_abortHandlerMutex);
+    if (!g_abortHandler) {
+      return;
+    }
+    handler = g_abortHandler;
+  }
+
+  try {
+    // 立刻拷成 std::string：C 侧指针只在调用期间有效（见 rn_http_server.h）
+    handler(std::string(requestId));
+  } catch (const std::exception &e) {
+    std::cerr << "Error in c_request_aborted_callback: " << e.what()
+              << std::endl;
+  }
+}
+
+void HybridHttpServer::setRequestAbortedHandler(
+    const std::function<void(const std::string &)> &handler) {
+  {
+    std::lock_guard<std::mutex> lock(g_abortHandlerMutex);
+    g_abortHandler = handler;
+  }
+  _abortHandler = handler;
+
+  // 立即注册（与 setWebSocketHandler 一致，不等到 start）：原生侧 ABORT_CALLBACK
+  // 是全局静态，跟某个 server 有没有启动无关。也刻意**不**在 stop() 里注销 ——
+  // 停了就不会再有请求，注销反而会让「先 setHandler 再 start」的顺序变得脆弱。
+  set_request_aborted_callback(c_request_aborted_callback);
+}
+
 // ==================== WebSocket API ====================
 
 // 全局 WebSocket 事件处理器

@@ -73,6 +73,19 @@ public:
                      const std::string &headersJson,
                      const std::shared_ptr<ArrayBuffer> &body) override;
 
+  // ==================== 请求中断通知 ====================
+
+  /**
+   * 注册「请求被客户端中断」处理器。
+   *
+   * ⚠️ 不需要在这里手动切回 JS 线程：Nitro 的 `std::function<R(Args...)>` 转换里
+   * `isAsync = is_promise_v<R> || std::is_void_v<R>`，本回调返回 void → 生成的是
+   * `AsyncJSCallback`，它的 `operator()` 走 `Dispatcher::runAsync`（内部做线程编组）。
+   * 与既有的 `setWebSocketHandler` 同形（那条链路已真机验证）。
+   */
+  void setRequestAbortedHandler(
+      const std::function<void(const std::string &)> &handler) override;
+
   // ==================== WebSocket API ====================
 
   void setWebSocketHandler(
@@ -97,6 +110,9 @@ private:
 
   // WebSocket 事件处理器
   std::function<void(const WebSocketEvent &)> _wsHandler;
+
+  // 请求中断处理器（保留一份实例引用，语义同 _wsHandler：真正的调用走全局那份）
+  std::function<void(const std::string &)> _abortHandler;
 };
 
 } // namespace margelo::nitro::http_server

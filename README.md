@@ -21,6 +21,7 @@ A high-performance React Native HTTP server library, implemented in Rust, suppor
 - 💾 **Buffer Upload Plugin**: Handle file uploads in memory with direct `ArrayBuffer` access.
 - 🔀 **URL Rewrite Plugin**: Support pattern-based URL rewriting using regular expressions.
 - 🔌 **WebSocket Plugin**: Real-time bidirectional communication with full handshake info access.
+- ⛔ **Client-disconnect awareness**: `request.signal` / `req.aborted` / `res.destroyed` so you can cancel downstream work.
 - 🔄 **Node.js Compatible**: Compatible with Node.js `http` module API.
 
 ## 📦 Installation
@@ -284,6 +285,57 @@ await server.start(8080, httpHandler, {
     mounts: [{ type: 'websocket', path: '/ws' }]
 });
 ```
+
+### Detecting client disconnects (`req.aborted` / `request.signal`)
+
+When the client disconnects before your handler returns a response (tab closed, request
+cancelled, network dropped), the JS side previously got **no notification at all** — you could
+only notice indirectly by failing to send the response, or by waiting for
+`request_timeout_secs`. Both paths now have a signal:
+
+```typescript
+// (1) High-level handler: use `signal` (recommended — you can hand it straight to fetch
+//     or any downstream SDK's cancellation parameter)
+import { HttpServer } from 'react-native-nitro-http-server';
+
+const server = new HttpServer();
+await server.start(8080, async (req) => {
+    try {
+        // This fetch is cancelled the moment the client goes away,
+        // instead of waiting for its own timeout.
+        const r = await fetch('https://upstream.example/api', { signal: req.signal });
+        return { statusCode: 200, body: await r.text() };
+    } catch (e) {
+        if (req.signal?.aborted) return { statusCode: 499, body: 'client closed request' };
+        throw e;
+    }
+});
+
+// (2) Node-compatible layer: req.aborted / 'aborted' event / res.destroyed
+import { createServer } from 'react-native-nitro-http-server';
+
+const nodeServer = createServer((req, res) => {
+    req.on('aborted', () => console.log('client left'));
+    longQuery().then((data) => {
+        if (req.aborted) return;          // nobody wants this result anymore
+        res.end(data);
+    });
+});
+```
+
+Alignment with Node (every row below was measured against Node 22):
+
+| Signal | This module | Node 22 |
+| :--- | :--- | :--- |
+| `req.aborted` | ✅ | ✅ |
+| `req.on('aborted')` | ✅ | ✅ (deprecated since v17) |
+| `req.destroyed` / `res.destroyed` | ✅ | ✅ |
+| `res.on('close')` | ✅ | ✅ |
+| `req.on('error')` (`code === 'ECONNRESET'`) | ✅ only when an `'error'` listener is **already attached** | ✅ likewise only with a listener |
+| `request.signal` | ✅ **extension of this module** | ❌ not present on `http.IncomingMessage` |
+
+⚠️ It fires **only when the response was never sent**: a normal completion, a handler
+exception, and a request timeout all do **not** trigger it.
 
 ### RESTful API Example
 
@@ -661,13 +713,19 @@ interface ServerConfig {
   /**
    * How long to wait for the JS handler to return a response, in seconds (default 30).
    * Long-polling / SSE need a larger value, otherwise the connection is cut and answered 500.
-   * Global state (the server is a singleton): only set when you pass this field.
+   *
+   * ⚠️ **Sticky global** (see Known Limitations): only written when you pass this field, so a
+   * value set by an earlier server keeps applying to later servers that omit it.
+   * Pass 30 explicitly to reset it.
    */
   request_timeout_secs?: number
   /**
    * Request body limit for the callback path, in bytes (default 100MB). Over the limit the
    * request is answered **413** and your handler is never called.
    * Plugin paths (static / zip / upload / webdav) do not read the body and are not affected.
+   *
+   * ⚠️ **Sticky global** (see Known Limitations): same caveat as `request_timeout_secs`.
+   * Pass `100 * 1024 * 1024` explicitly to reset it.
    */
   max_body_size?: number
 }
@@ -836,6 +894,46 @@ These APIs are used internally by the Node.js compatible layer for streaming sup
 Intentional behavior, not-yet-implemented features, and platform constraints. Each item
 states **what you will observe** and **what to do instead**.
 
+### `server.close()` is asynchronous (stop→start ordering is handled for you)
+
+`close()` only **starts** the native stop and returns immediately; the `'close'` event and
+the `close(cb)` callback fire after the native side has actually finished.
+
+Because the native server is a singleton, a `start()` landing in that window used to race
+with the teardown: the new server reported a port, but its requests got **no response at
+all** (a connect/read failure, not a 500) — intermittently, so it looked like a flaky test.
+
+**Fixed 2026-09-22** — `start()` now waits for any in-flight native stop before proceeding
+(`src/nativeStopQueue.ts`), so the Node-style pattern is safe again:
+
+```typescript
+oldServer.close();
+newServer.listen(8080);   // ✓ safe — start() waits for the pending stop
+```
+
+Verified on a real device (the on-device RN test suite, test D11, which deliberately does the
+racy pattern). You may still `await new Promise(r => old.close(() => r()))` if you want an
+explicit ordering guarantee in your own code; it costs nothing.
+
+### `request.signal` requires the host to provide `AbortController`
+
+`request.signal` (and the `AbortController` behind it) **only exists when the host implements
+it**:
+
+- **React Native does** — `Libraries/Core/setUpXHR.js` calls
+  `polyfillGlobal('AbortController', …)`, so it works on device;
+- **headless JS hosts generally do not** — on the headless host this module is verified
+  against, `typeof globalThis.AbortController === 'undefined'`.
+
+On such a host `req.signal` is simply `undefined`, and **every other disconnect signal keeps
+working** (`req.aborted` / `'aborted'` / `res.destroyed` do not depend on `AbortController`).
+
+→ Guard before use: `if (req.signal) { ... }`, or use optional chaining `req.signal?.aborted`.
+Detect it with `typeof AbortController === 'undefined'`.
+
+The module deliberately ships **no** internal fallback: a hand-rolled signal that only runs on
+a test host would mean the tests are not exercising the real thing.
+
 ### Multiple callback servers share one native handler
 
 `HttpServer` / `AppServer` / `ConfigServer` all register their handler into a single global
@@ -902,6 +1000,26 @@ const filename = request.headers['x-uploaded-filename-encoding'] === 'percent'
 - A `multipart` request with several files is accepted, but only the **first** file is
   reported in the headers (`x-uploaded-file-path` etc.). Loop over the request if you need
   all of them.
+
+### `request_timeout_secs` / `max_body_size` are **sticky** globals
+
+Both are stored in native globals that are only written **when you pass the field**
+(`global.rs`, `app_server.rs`). Nothing resets them on `stop()`, so a value set by one
+server keeps applying to every later server — even one that omits the field entirely:
+
+```typescript
+await cfgA.start(0, h, { max_body_size: 1024 });   // 1 KB limit
+await cfgA.stop();
+await HttpServerModule.start(0, h);                // no config at all — still 1 KB!
+// → a 1 MB POST now answers 413
+```
+
+This is easy to hit when one screen uses a small `max_body_size` for upload tests and
+another expects the default. **Pass the value you want every time** (or reset it
+explicitly) if your app starts more than one server.
+
+> Found by the on-device RN test suite — the 1 MB POST in the
+> "core" suite started returning 413 after the mounts suite had set `max_body_size: 1024`.
 
 ### `zip` mounts hold the whole archive in memory
 
@@ -1018,6 +1136,31 @@ curl http://localhost:8080/api/test
 ```
 
 ## 📝 Changelog
+
+### Unreleased
+
+- **New: the JS side is now notified when the client disconnects.** Previously, if the client
+  went away before the handler returned a response, JS got no signal at all — you could only
+  notice indirectly by failing to send the response or by waiting out `request_timeout_secs`.
+  There are now two paths: high-level handlers get `request.signal` (hand it straight to
+  `fetch` or any downstream SDK's cancellation parameter), and the Node-compatible layer gets
+  `req.aborted` / the `'aborted'` event / `res.destroyed`. Every signal except
+  `request.signal` (an extension of this module — Node's `IncomingMessage` has no such
+  property) was **measured against Node 22** and matches. It fires **only when the response
+  was never sent** — a normal completion, a handler exception, and a request timeout do not
+  trigger it. Implemented across four layers (Rust predicate → C header → C++ callback →
+  Nitro thread hop → TS).
+- **Fixed the `close()` → `start()` race.** The native server is a **singleton**, and
+  `close()` only *starts* the native stop (the `'close'` callback fires once the native side
+  has actually finished). A `start()` landing in that window raced with the teardown: the new
+  server reported a port, but its requests got **no response at all** (a connect/read
+  failure, not a 500) — intermittently, so it looked like a flaky test. `start()` now waits
+  for any in-flight native stop first (`src/nativeStopQueue.ts`). Verified on device
+  (the on-device RN test suite, test D11).
+- **Docs:** `request_timeout_secs` / `max_body_size` are documented as **sticky globals** —
+  they are only written when you pass the field and `stop()` does not reset them, so a value
+  set by one server keeps applying to later servers that omit it. Found by the on-device
+  suite (a 1 MB POST suddenly answering 413).
 
 ### 1.9.0
 

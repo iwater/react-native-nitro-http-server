@@ -41,6 +41,7 @@ import { __emitAppState, __resetAppState } from 'react-native';
 function createFakeNative() {
   const calls: Array<{ method: string; args: unknown[] }> = [];
   let wsHandler: ((event: unknown) => void) | null = null;
+  let abortHandler: ((requestId: string) => void) | null = null;
   let nextPort = 18080;
 
   const ret = (method: string, value: () => unknown) => (...args: unknown[]) => {
@@ -67,6 +68,10 @@ function createFakeNative() {
       calls.push({ method: 'setWebSocketHandler', args: [h] });
       wsHandler = h;
     },
+    setRequestAbortedHandler: (h: (requestId: string) => void) => {
+      calls.push({ method: 'setRequestAbortedHandler', args: [h] });
+      abortHandler = h;
+    },
   };
 
   return {
@@ -85,12 +90,18 @@ function createFakeNative() {
       assert.ok(wsHandler, '原生侧还没有装 WebSocket 回调');
       return wsHandler;
     },
+    /** 当前装在原生侧的那个「请求被中断」回调 */
+    getAbortHandler() {
+      assert.ok(abortHandler, '原生侧还没有装请求中断回调');
+      return abortHandler;
+    },
     setNextPort(p: number) {
       nextPort = p;
     },
     reset() {
       calls.length = 0;
       wsHandler = null;
+      abortHandler = null;
       nextPort = 18080;
     },
   };
