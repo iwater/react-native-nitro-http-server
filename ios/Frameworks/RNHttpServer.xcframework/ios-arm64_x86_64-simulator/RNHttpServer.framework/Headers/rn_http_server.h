@@ -182,6 +182,18 @@ bool ws_send_binary(const char* connection_id, const char* data, int len);
 /// @return 关闭成功返回 true
 bool ws_close(const char* connection_id, int code, const char* reason);
 
+/// 注册「请求被中断」的回调（可选，传 NULL 注销）
+/// 
+/// 客户端在 handler 返回之前断开连接时调用，参数是 request_id。
+/// 触发时机：请求 future 被丢弃（hyper 在客户端断开时直接 drop）。
+/// 
+/// ⚠️ 回调在原生线程上被调用，实现方负责切回 JS 线程；
+/// request_id 指针仅在调用期间有效，需要留存请自行拷贝。
+/// 
+/// @param cb 回调函数指针（可为 NULL）
+/// @return 注册成功返回 true
+bool set_request_aborted_callback(void (*cb)(const char* request_id));
+
 #ifdef __cplusplus
 }
 #endif
