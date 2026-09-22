@@ -32,6 +32,8 @@ export interface ServerStats {
 // 基础挂载接口
 interface BaseMount {
     path: string
+    /** 自定义响应头（对 rewrite/websocket/upload mount 为无操作） */
+    headers?: Record<string, string>
 }
 
 // WebDAV 挂载
@@ -91,12 +93,23 @@ export interface WebSocketMount extends BaseMount {
 
 export type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount | WebSocketMount
 
+// CORS 配置
+export interface CorsConfig {
+    origin?: string          // 默认 "*"
+    methods?: string[]       // 默认常见方法 + WebDAV 方法
+    headers?: string[]       // 默认 ["*"]，preflight 时优先回显 Access-Control-Request-Headers
+    credentials?: boolean    // 默认 false；为 true 时回显请求 Origin
+    max_age?: number         // preflight 缓存秒数
+}
+
 // 服务器插件配置
 export interface ServerConfig {
     root_dir?: string                       // 静态文件根目录（可选，作为默认静态挂载点）
     verbose?: boolean | 'off' | 'error' | 'warn' | 'info' | 'debug'  // 日志等级
     mime_types?: Record<string, string>     // 自定义 MIME types
     mounts?: Mountable[]                    // 统一挂载列表
+    /** CORS 配置：true 启用默认（Allow-Origin: *），对象自定义，缺省关闭 */
+    cors?: boolean | CorsConfig
 }
 
 // WebSocket 事件类型
@@ -198,6 +211,13 @@ export interface HttpServer extends HybridObject<{
      * @returns 是否成功
      */
     endResponse(requestId: string, statusCode: number, headersJson: string): Promise<boolean>
+
+    /**
+     * 设置全局 CORS 配置（对所有 server 类型生效，应在 server 启动前调用）
+     * @param corsJson CORS 配置 JSON 字符串："true" 启用默认配置，对象可包含
+     *   origin/methods/headers/credentials/max_age 字段，"false" 关闭
+     */
+    setCorsConfig(corsJson: string): void
 
     /**
      * 写入二进制响应体并发送响应（同步复制数据）

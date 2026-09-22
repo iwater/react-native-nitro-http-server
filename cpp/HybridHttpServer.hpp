@@ -64,6 +64,9 @@ public:
   endResponse(const std::string &requestId, double statusCode,
               const std::string &headersJson) override;
 
+  // CORS 全局配置
+  void setCorsConfig(const std::string &corsJson) override;
+
   // 二进制响应（在 JS 线程上安全复制数据）
   std::shared_ptr<Promise<bool>>
   sendBinaryResponse(const std::string &requestId, double statusCode,

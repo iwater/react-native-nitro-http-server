@@ -216,6 +216,38 @@ const server = await createConfigServer(8080, async (request) => {
 // - 通过 ws://localhost:8080/ws 连接 WebSocket
 ```
 
+### CORS 与挂载点自定义响应头
+
+为服务器启用 CORS，并为挂载的插件自定义响应头。
+
+```typescript
+import { createConfigServer, setCorsConfig } from 'react-native-nitro-http-server';
+
+// 方式一：config server 的 cors 字段
+await createConfigServer(port, handler, {
+  cors: true, // 或 { origin: 'https://app.com', credentials: true, max_age: 600 }
+  mounts: [
+    {
+      type: 'static',
+      path: '/files',
+      root: '/path/to/files',
+      headers: { 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' },
+    },
+    { type: 'webdav', path: '/dav', root: '/path/to/dav' },
+  ],
+});
+
+// 方式二：其他 server 类型启动前调用 setCorsConfig
+setCorsConfig(true);
+await createStaticServer(port, rootDir);
+```
+
+**注意**：
+- `setCorsConfig` / `config.cors` 应在 server 启动前设置。
+- `cors: true` 的默认行为：返回 `Access-Control-Allow-Origin: *`，并自动处理 preflight（OPTIONS）请求。
+- 当 `credentials: true` 时，`Access-Control-Allow-Origin` 回显请求的 `Origin`。
+- 挂载点上的 `headers` 字段允许覆盖插件默认头；对 rewrite/websocket/upload mount 为无操作。
+
 ### WebSocket 服务器
 
 提供实时双向通信，支持获取完整的握手信息。
@@ -570,6 +602,10 @@ await server.start(8080, handler, config, { host: '0.0.0.0' });
 
 创建并启动带插件配置的服务器。
 
+#### `setCorsConfig(config: boolean | CorsConfig): void`
+
+设置全局 CORS 配置，对所有 server 类型生效（`HttpServer`、`StaticServer`、`AppServer`、Node.js 兼容的 `http.createServer`）。应在 server 启动前调用。`true` 启用默认配置（`Access-Control-Allow-Origin: *`，自动处理 preflight 请求），对象自定义行为，`false` 关闭 CORS。
+
 ### 类型定义
 
 #### HttpRequest
@@ -615,11 +651,23 @@ interface ServerOptions {
 interface ServerConfig {
   root_dir?: string;             // 静态文件根目录（可选，作为默认静态挂载点）
   verbose?: boolean | 'off' | 'error' | 'warn' | 'info' | 'debug'; // 日志等级 (默认 'off')
+  cors?: boolean | CorsConfig;   // CORS 配置：true = 默认（Allow-Origin: *），对象自定义，缺省关闭
   mime_types?: MimeTypesConfig;
   mounts?: Mountable[];          // 统一挂载列表
 }
 
+interface CorsConfig {
+  origin?: string;        // 默认 "*"
+  methods?: string[];     // 默认：常见方法 + WebDAV 方法
+  headers?: string[];     // 默认 ["*"]；preflight 时优先回显请求的 Access-Control-Request-Headers
+  credentials?: boolean;  // 默认 false；为 true 时 Allow-Origin 回显请求 Origin
+  max_age?: number;       // preflight 缓存秒数
+}
+
 type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount | WebSocketMount;
+
+// 除 RewriteMount 外，所有挂载点还支持：
+headers?: Record<string, string>; // 自定义响应头，可覆盖插件默认头（对 rewrite/websocket/upload mount 为无操作）
 
 interface WebDavMount {
   type: 'webdav';

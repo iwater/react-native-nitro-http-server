@@ -25,7 +25,8 @@
       "rn_http_server"
     ],
     "extraLibDirs": [
-      "./lib"
+      "./lib",
+      "./mac"
     ]
   }
 }

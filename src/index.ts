@@ -1,6 +1,6 @@
 import { NitroModules } from 'react-native-nitro-modules'
 import { AppState, AppStateStatus } from 'react-native'
-import type { HttpServer as NitroHttpServer, HttpRequest, HttpResponse as NitroHttpResponse, ServerConfig } from './HttpServer.nitro'
+import type { HttpServer as NitroHttpServer, HttpRequest, HttpResponse as NitroHttpResponse, ServerConfig, CorsConfig } from './HttpServer.nitro'
 import { createServer } from './http'
 
 // Redefine HttpResponse for User (User sees unified body)
@@ -443,6 +443,9 @@ export class ConfigServer {
 
     const wrappedHandler = wrapHandler(handler)
     const configJson = JSON.stringify(config)
+    // 应用 CORS 配置（无配置时显式关闭，避免上次启动残留）
+    // 注意：auto-restart 路径不需要重复调用 —— Rust 侧 CORS_CONFIG 是全局状态，stopAppServer 不会清除
+    HttpServerModule.setCorsConfig(JSON.stringify(config.cors ?? false))
     const host = this._options.host
     const actualPort = await HttpServerModule.startServerWithConfig(port, wrappedHandler, configJson, host)
     this._isRunning = actualPort > 0
@@ -648,8 +651,17 @@ export async function createConfigServer(port: number, handler: RequestHandler, 
   return server
 }
 
+/**
+ * 设置全局 CORS 配置（对所有 server 类型生效，应在 server 启动前调用）
+ * 注意：无效的 JSON 不会抛错，Rust 侧会记录警告并禁用 CORS
+ * @param config true 启用默认（Allow-Origin: *），对象自定义，false 关闭
+ */
+export function setCorsConfig(config: boolean | CorsConfig): void {
+  HttpServerModule.setCorsConfig(JSON.stringify(config ?? false))
+}
+
 // 导出类型和实例
-export type { HttpRequest, ServerConfig, DirListConfig, Mountable, WebDavMount, ZipMount, StaticMount, UploadMount, BufferUploadMount, RewriteMount, RewriteRule, WebSocketMount, WebSocketEvent, WebSocketEventType, WebSocketHandler } from './HttpServer.nitro'
+export type { HttpRequest, ServerConfig, CorsConfig, DirListConfig, Mountable, WebDavMount, ZipMount, StaticMount, UploadMount, BufferUploadMount, RewriteMount, RewriteRule, WebSocketMount, WebSocketEvent, WebSocketEventType, WebSocketHandler } from './HttpServer.nitro'
 
 export { HttpServerModule }
 
@@ -789,4 +801,4 @@ export * from './http'
 export { createServer, Server, IncomingMessage, ServerResponse, STATUS_CODES, METHODS } from './http'
 
 import { Server, IncomingMessage, ServerResponse, STATUS_CODES, METHODS } from './http'
-export default { createHttpServer, createStaticServer, createAppServer, createConfigServer, HttpServer, StaticServer, AppServer, ConfigServer, createServer, Server, IncomingMessage, ServerResponse, STATUS_CODES, METHODS, ServerWebSocket, setupWebSocketHandler, getWebSocketConnections, getWebSocket }
+export default { createHttpServer, createStaticServer, createAppServer, createConfigServer, HttpServer, StaticServer, AppServer, ConfigServer, createServer, Server, IncomingMessage, ServerResponse, STATUS_CODES, METHODS, ServerWebSocket, setupWebSocketHandler, getWebSocketConnections, getWebSocket, setCorsConfig }

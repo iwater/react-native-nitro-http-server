@@ -126,6 +126,12 @@ bool write_response_chunk(const char* request_id, const char* chunk, int chunk_l
 /// @return 如果成功结束响应返回true，否则返回false
 bool end_response(const char* request_id, int status_code, const char* headers_json);
 
+/// 设置全局 CORS 配置
+///
+/// @param config_json CORS 配置 JSON 字符串："true" 启用默认配置，对象可包含
+///   origin/methods/headers/credentials/max_age 字段，传入 NULL 或 "false" 关闭
+void set_cors_config(const char* config_json);
+
 // ==================== WebSocket API ====================
 
 /// WebSocket 事件结构体

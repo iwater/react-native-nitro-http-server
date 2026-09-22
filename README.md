@@ -220,6 +220,38 @@ const server = await createConfigServer(8080, async (request) => {
 // - WebSocket at ws://localhost:8080/ws
 ```
 
+### CORS and Per-Mount Custom Headers
+
+Enable CORS for your server and customize response headers for mounted plugins.
+
+```typescript
+import { createConfigServer, setCorsConfig } from 'react-native-nitro-http-server';
+
+// Option 1: the `cors` field of the config server
+await createConfigServer(port, handler, {
+  cors: true, // or { origin: 'https://app.com', credentials: true, max_age: 600 }
+  mounts: [
+    {
+      type: 'static',
+      path: '/files',
+      root: '/path/to/files',
+      headers: { 'Cache-Control': 'no-cache', 'Access-Control-Allow-Origin': '*' },
+    },
+    { type: 'webdav', path: '/dav', root: '/path/to/dav' },
+  ],
+});
+
+// Option 2: call setCorsConfig before starting other server types
+setCorsConfig(true);
+await createStaticServer(port, rootDir);
+```
+
+**Notes**:
+- `setCorsConfig` / `config.cors` must be set before the server starts.
+- `cors: true` enables the default behavior: `Access-Control-Allow-Origin: *`, and preflight (OPTIONS) requests are handled automatically.
+- When `credentials: true`, `Access-Control-Allow-Origin` echoes the request `Origin`.
+- The `headers` field on a mount allows overriding the plugin's default headers; it is a no-op for rewrite/websocket/upload mounts.
+
 ### WebSocket Server
 
 Provides real-time bidirectional communication with full access to handshake information.
@@ -574,6 +606,10 @@ Creates and starts an app server (hybrid mode).
 
 Creates and starts a config server with plugin configuration.
 
+#### `setCorsConfig(config: boolean | CorsConfig): void`
+
+Sets the global CORS configuration for all server types (`HttpServer`, `StaticServer`, `AppServer`, Node.js compatible `http.createServer`). Call before starting the server. `true` enables the default configuration (`Access-Control-Allow-Origin: *`, automatic preflight handling), an object customizes the behavior, `false` disables CORS.
+
 ### Type Definitions
 
 #### HttpRequest
@@ -619,11 +655,23 @@ interface ServerOptions {
 interface ServerConfig {
   root_dir?: string;             // Static file root (Optional, as default static mount)
   verbose?: boolean | 'off' | 'error' | 'warn' | 'info' | 'debug'; // Log level (default: 'off')
+  cors?: boolean | CorsConfig;   // CORS config: true = default (Allow-Origin: *), object to customize, omitted = disabled
   mime_types?: MimeTypesConfig;
   mounts?: Mountable[];          // Unified mount list
 }
 
+interface CorsConfig {
+  origin?: string;        // default "*"
+  methods?: string[];     // default: common methods + WebDAV methods
+  headers?: string[];     // default ["*"]; echoes the request's Access-Control-Request-Headers on preflight
+  credentials?: boolean;  // default false; when true, Allow-Origin echoes the request Origin
+  max_age?: number;       // preflight cache duration in seconds
+}
+
 type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount | WebSocketMount;
+
+// All mounts except RewriteMount also accept:
+headers?: Record<string, string>; // Custom response headers; overrides plugin default headers (no-op for rewrite/websocket/upload mounts)
 
 interface WebDavMount {
   type: 'webdav';

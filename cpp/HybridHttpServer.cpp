@@ -664,6 +664,10 @@ HybridHttpServer::endResponse(const std::string &requestId, double statusCode,
   });
 }
 
+void HybridHttpServer::setCorsConfig(const std::string &corsJson) {
+  set_cors_config(corsJson.c_str());
+}
+
 std::shared_ptr<Promise<bool>> HybridHttpServer::sendBinaryResponse(
     const std::string &requestId, double statusCode,
     const std::string &headersJson, const std::shared_ptr<ArrayBuffer> &body) {
