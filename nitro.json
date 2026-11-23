@@ -30,5 +30,8 @@
     "extraFrameworks": [
       "CoreFoundation"
     ]
-  }
+  },
+  "ignorePaths": [
+    "**/node_modules"
+  ]
 }

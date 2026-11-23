@@ -10,7 +10,8 @@ Pod::Spec.new do |s|
   s.license      = package["license"]
   s.authors      = package["author"]
   
-  s.platform     = :ios, "13.0"
+  ios_deployment_target = defined?(min_ios_version_supported) ? min_ios_version_supported : "15.1"
+  s.platforms    = { :ios => ios_deployment_target }
   s.source       = { :git => package["repository"]["url"].gsub("git+", ""), :tag => "v#{s.version}" }
   
   s.source_files = [

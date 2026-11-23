@@ -50,8 +50,7 @@ __metadata:
     react-native-nitro-modules: "npm:^0.35.0"
     typescript: "npm:^5.9.3"
   peerDependencies:
-    react-native: "*"
-    react-native-nitro-modules: ^0.35.0
+    react-native-nitro-modules: ">=0.35.0 <0.38"
   languageName: unknown
   linkType: soft
 
