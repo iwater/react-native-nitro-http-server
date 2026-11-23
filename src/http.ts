@@ -129,6 +129,7 @@ export class IncomingMessage extends EventEmitter {
     private _nativeServer: NitroHttpServer;
     private _paused: boolean = false;
     private _reading: boolean = false;
+    private _responseEnded: boolean = false;
 
     constructor(request: HttpRequest, nativeServer: NitroHttpServer) {
         super();
@@ -203,13 +204,21 @@ export class IncomingMessage extends EventEmitter {
         return this;
     }
 
+    _markResponseEnded(): void {
+        this._responseEnded = true;
+    }
+
     private async _pump(): Promise<void> {
-        if (this._reading || this._paused || !this.readable) return;
+        if (this._reading || this._paused || !this.readable || this.aborted || this.destroyed) return;
         this._reading = true;
 
         try {
-            while (!this._paused && this.readable) {
+            while (!this._paused && this.readable && !this.aborted && !this.destroyed) {
                 const chunk = await this._nativeServer.readRequestBodyChunk(this._requestId);
+
+                if (this.aborted || this.destroyed || !this.readable) {
+                    break;
+                }
 
                 if (!chunk || chunk.length === 0) {
                     this.readable = false;
@@ -223,7 +232,9 @@ export class IncomingMessage extends EventEmitter {
                 // await new Promise(r => setTimeout(r, 0)); 
             }
         } catch (err) {
-            this.emit('error', err);
+            if (!this.aborted && !this.destroyed && this.readable && !this._responseEnded) {
+                this.emit('error', err);
+            }
         } finally {
             this._reading = false;
         }
@@ -540,12 +551,17 @@ export class ServerResponse extends EventEmitter {
             // 也排进串行链。若不走链，`sendBinaryResponse` 会抢在挂起的 write 之前 ——
             // 而迟到的 `writeResponseChunk` 会在 cleanup 之后重建累积器条目（永久泄漏）。
             //
-            // ⚠️ 仍有一个**未解决**的限制（需要 Rust 侧改动，本任务不处理）：
-            // `sendBinaryResponse` 最终走 `send_response`，用的是**显式 body**，
-            // 不读累积器。所以 `res.write('a'); res.end(arrayBuffer)` 里那个 'a'
-            // 会被**静默丢弃**（响应体只剩 arrayBuffer）。串行化只保证了顺序，
-            // 没有把两者拼起来。完整修需要让二进制路径也走 `write_response_chunk`
-            // + `end_response`（或让 Rust 侧 send_response 合并累积器）。
+            // ✅ **已修**（2026-09-24）：`send_response` 现在会先把累积器里的块并进来。
+            //
+            // 修复前的缺陷：`sendBinaryResponse` 最终走 `send_response`，只读**显式 body**、
+            // 不读累积器，于是 `res.write('a'); res.end(arrayBuffer)` 里那个 'a' 被
+            // **静默丢弃**（响应体只剩 arrayBuffer）—— 串行化只保证了顺序，没把两者拼起来。
+            //
+            // 修法（`rust_c_lib/src/c_api.rs::send_response`）：先 `remove` 该请求的
+            // `CHUNK_ACCUMULATORS` 条目，把它的字节**前置**到显式 body 上。
+            // 顺序与 node 一致（实测 node v22.22.2：
+            // `write('a'); end(Buffer.from([0x62,0x63]))` → body `616263`）。
+            // 非流式路径累积器恒为空 ⇒ 合并是无副作用的 no-op。
             this._enqueueNativeWrite(
                 () => this._nativeServer.sendBinaryResponse(
                     this._requestId, this.statusCode, headersJson, buffer as ArrayBuffer
@@ -866,6 +882,7 @@ export class Server extends EventEmitter {
             const alive = await this._probeAlive();
             if (!alive) {
                 console.log('[http.Server] Detected server is dead, auto-restarting...');
+                this.listening = false;
                 // 这条路径绕过 close()：原生 stop 成功就得把 ref 放掉，
                 // 重启成功再重新 acquire（LoopRef 是单 token 槽，幂等）。
                 try { await stopWithTracking(this._nativeServer.stop()); this._loopRef.release(); } catch (_) { /* ignore */ }
@@ -921,6 +938,7 @@ export class Server extends EventEmitter {
             const req = new IncomingMessage(request, this._nativeServer);
             const res = new ServerResponse(request.requestId, this._nativeServer, (response) => {
                 // handler 落定 → 摘掉中断登记（正常路径不会再有中断通知）
+                req._markResponseEnded();
                 untrackRequest(request.requestId);
                 resolve(response);
             });

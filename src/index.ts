@@ -35,6 +35,20 @@ export interface ServerOptions {
   /** 监听的 IP 地址，默认 127.0.0.1 */
   host?: string
   /**
+   * tokio worker 线程数。省略或 0 = 按 CPU 核数（tokio 默认）。
+   *
+   * 该 runtime 在每次 `start()` 时新建、`stop()` 时销毁，所以**每次启动都可以改**
+   * （与 `react-native-nitro-net` 的全局单例 runtime 不同）。
+   *
+   * 实测（10 核机，native fast path）：默认 10 个 worker 是**过配** —— 各 worker
+   * 只有 14~23% 忙碌，而全局 Mutex 竞争 + 跨线程唤醒合计占 11.4% CPU。
+   * 降到 2 个后高并发吞吐 **+13%**、每请求 CPU **−40%**。
+   *
+   * ⚠️ 但线程越少，**并发容纳能力越低**：handler 里有慢 `await`（DB / 上游网络）
+   * 时会排队。按「最慢的 handler 会阻塞多久」来定，别一律抄 2。
+   */
+  workerThreads?: number
+  /**
    * 锁屏/切换App后回到前台时，自动检测并重启被系统挂起的服务。
    * 默认 false，设为 true 后无需在 App 中添加额外代码。
    */
@@ -105,6 +119,28 @@ const wrapHandler = (handler: RequestHandler): (request: HttpRequest) => Promise
   }
 }
 
+/**
+ * 请求型 loop-ref：发起时 acquire、settle 时 release（成功/失败都要）。
+ *
+ * 与 handle 型（running 的 server 在 start 时 acquire、stop 成功后 release）互补：
+ * 一次性异步方法**没有句柄可挂**。不登记的话，当它是**程序最后一个动作**时，宿主会先
+ * 判定「无事可做」而收泵退出，原生结果随后回来时无处投递 → Promise 永不 settle
+ * （表现是进程静默退出，没有任何报错；Debug 构建下宿主的 dispatcher 会打一行
+ * 「异步任务被丢弃」的 WARN，Release 下那行日志被编译掉，于是完全静默）。
+ *
+ * 注意「没登记」的症状与位置有关：同一句 `isRunning()` 在 server running 时调用没问题
+ * （handle-ref 还在），但 `stop()` 之后再调用就会丢 —— 因为 release 一发生 keepAlive 就归零。
+ */
+async function withRequestRef<T>(label: string, run: () => Promise<T>): Promise<T> {
+  const ref = new LoopRef(label)
+  ref.acquire()
+  try {
+    return await run()
+  } finally {
+    ref.release()
+  }
+}
+
 // 普通 HTTP 服务器
 export class HttpServer {
   /**
@@ -138,7 +174,7 @@ export class HttpServer {
     this._loopRef.acquire()
     let actualPort = 0
     try {
-      actualPort = await HttpServerModule.start(port, wrappedHandler, host)
+      actualPort = await HttpServerModule.start(port, wrappedHandler, host, this._options.workerThreads)
     } catch (e) {
       this._loopRef.release()
       throw e
@@ -170,12 +206,12 @@ export class HttpServer {
   }
 
   async getStats(): Promise<Record<string, any>> {
-    return await HttpServerModule.getStats()
+    return await withRequestRef('http-server.getStats', () => HttpServerModule.getStats())
   }
 
   async isRunning(): Promise<boolean> {
     // 调用原生层的 isRunning()，内部会用 TCP connect 探测 socket 是否真的存活
-    const nativeRunning = await HttpServerModule.isRunning()
+    const nativeRunning = await withRequestRef('http-server.isRunning', () => HttpServerModule.isRunning())
     this._isRunning = nativeRunning
     return nativeRunning
   }
@@ -217,14 +253,10 @@ export class HttpServer {
       const alive = await this._probeAlive()
       if (!alive && this._handler) {
         console.log('[HttpServer] Detected server is dead, auto-restarting...')
-        // 这条路径绕过 stop()，所以自己配对 LoopRef：原生 stop 成功就放掉 ref
-        // （handle 没了），重启成功再 acquire；重启失败 / 拿到端口 0 也放掉 ——
-        // 否则 ref 一直挂着、进程再也退不出去。形状与 http.ts 的同款处理一致。
-        // ⚠️ 本路径只在 RN 的 AppState 'active' 且服务已死时触发，无头宿主上跑不到，
-        //    属防御性对称，R31 覆盖不到（R31 覆盖的是 start/stop 主路径）。
+        this._isRunning = false
         try {
           // 清理可能的残留状态
-          await HttpServerModule.stop()
+          await stopWithTracking(HttpServerModule.stop())
           this._loopRef.release()
         } catch (_) { /* ignore */ }
 
@@ -232,7 +264,7 @@ export class HttpServer {
           const wrappedHandler = wrapHandler(this._handler)
           const host = this._options.host
           this._loopRef.acquire()
-          const actualPort = await HttpServerModule.start(this._port, wrappedHandler, host)
+          const actualPort = await HttpServerModule.start(this._port, wrappedHandler, host, this._options.workerThreads)
           if (actualPort > 0) {
             this._isRunning = true
             this._port = actualPort
@@ -313,7 +345,7 @@ export class StaticServer {
   }
 
   async isRunning(): Promise<boolean> {
-    const nativeRunning = await HttpServerModule.isRunning()
+    const nativeRunning = await withRequestRef('http-server.isRunning', () => HttpServerModule.isRunning())
     this._isRunning = nativeRunning
     return nativeRunning
   }
@@ -353,8 +385,9 @@ export class StaticServer {
       const alive = await this._probeAlive()
       if (!alive) {
         console.log('[StaticServer] Detected server is dead, auto-restarting...')
+        this._isRunning = false
         // 同 HttpServer 的 auto-restart：绕过 stop()，ref 要自己配对（见上方注释）。
-        try { await HttpServerModule.stopStaticServer(); this._loopRef.release() } catch (_) { /* ignore */ }
+        try { await stopWithTracking(HttpServerModule.stopStaticServer()); this._loopRef.release() } catch (_) { /* ignore */ }
 
         try {
           const host = this._options.host
@@ -443,7 +476,7 @@ export class AppServer {
   }
 
   async isRunning(): Promise<boolean> {
-    const nativeRunning = await HttpServerModule.isRunning()
+    const nativeRunning = await withRequestRef('http-server.isRunning', () => HttpServerModule.isRunning())
     this._isRunning = nativeRunning
     return nativeRunning
   }
@@ -483,8 +516,9 @@ export class AppServer {
       const alive = await this._probeAlive()
       if (!alive && this._handler) {
         console.log('[AppServer] Detected server is dead, auto-restarting...')
+        this._isRunning = false
         // 同 HttpServer 的 auto-restart：绕过 stop()，ref 要自己配对（见上方注释）。
-        try { await HttpServerModule.stopAppServer(); this._loopRef.release() } catch (_) { /* ignore */ }
+        try { await stopWithTracking(HttpServerModule.stopAppServer()); this._loopRef.release() } catch (_) { /* ignore */ }
 
         try {
           const wrappedHandler = wrapHandler(this._handler)
@@ -717,7 +751,7 @@ export class ConfigServer {
   }
 
   async isRunning(): Promise<boolean> {
-    const nativeRunning = await HttpServerModule.isRunning()
+    const nativeRunning = await withRequestRef('http-server.isRunning', () => HttpServerModule.isRunning())
     this._isRunning = nativeRunning
     return nativeRunning
   }
@@ -757,12 +791,17 @@ export class ConfigServer {
       const alive = await this._probeAlive()
       if (!alive && this._handler && this._config) {
         console.log('[ConfigServer] Detected server is dead, auto-restarting...')
-        try { await HttpServerModule.stopAppServer() } catch (_) { /* ignore */ }
+        this._isRunning = false
+        try {
+          await stopWithTracking(HttpServerModule.stopAppServer())
+          this._loopRef.release()
+        } catch (_) { /* ignore */ }
 
         try {
           const wrappedHandler = wrapHandler(this._handler)
           const configJson = JSON.stringify(this._config)
           const host = this._options.host
+          this._loopRef.acquire()
           const actualPort = await HttpServerModule.startServerWithConfig(this._port, wrappedHandler, configJson, host)
           if (actualPort > 0) {
             this._isRunning = true
@@ -778,8 +817,11 @@ export class ConfigServer {
               this._setupWebSocketHandler()
             }
             console.log(`[ConfigServer] Auto-restarted on port ${actualPort}`)
+          } else {
+            this._loopRef.release()
           }
         } catch (e) {
+          this._loopRef.release()
           console.error('[ConfigServer] Auto-restart failed:', e)
         }
       }

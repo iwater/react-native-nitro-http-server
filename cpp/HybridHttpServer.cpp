@@ -1,6 +1,7 @@
 // cpp/HybridHttpServer.cpp
 #include "HybridHttpServer.hpp"
 #include "JsonEscape.hpp"
+#include <atomic>
 #include <cctype>
 #include <iostream>
 #include <mutex>
@@ -42,8 +43,8 @@ static ServerContext *g_serverContext = nullptr;
 static std::mutex g_contextMutex;
 
 // ==================== iOS 后台任务管理 ====================
-static bool g_serverRunning = false;
-static int g_serverPort = 0;
+static std::atomic<bool> g_serverRunning{false};
+static std::atomic<int> g_serverPort{0};
 static bool g_lifecycleRegistered = false;
 
 // 通过 TCP connect 探测服务器是否真的在监听
@@ -126,21 +127,38 @@ static std::string serializeHeaders(
     return "{}";
   }
 
-  std::string json = "{";
+  const auto &h = headers.value();
+
+  // 预分配：按「多数 header 无需转义」估（×2 给少量转义留余量）。估小了只是
+  // 多一次 realloc，不影响正确性。
+  std::size_t estimate = 2; // "{}"
+  for (const auto &[key, value] : h) {
+    estimate += key.size() * 2 + value.size() * 2 + 8;
+  }
+
+  std::string json;
+  json.reserve(estimate);
+  json += '{';
   bool first = true;
-  for (const auto &[key, value] : headers.value()) {
+  for (const auto &[key, value] : h) {
     if (!first)
-      json += ",";
+      json += ',';
     first = false;
 
     // JSON 字符串转义（引号、反斜杠，**以及控制字符**）。
     // 控制字符必须转义：JSON 字符串里不允许裸控制字符（RFC 8259 §7），
     // 漏掉的话整段 headers JSON 会被 Rust 侧 serde_json 拒收 →
     // 这一次响应的所有响应头被静默丢弃。详见 JsonEscape.hpp。
-    json += "\"" + rn_http_server_json::escapeJsonString(key) + "\":\"" +
-            rn_http_server_json::escapeJsonString(value) + "\"";
+    //
+    // 逐段 append 而不是 `json += A + B + C + D`：后者每个 header 会构造
+    // 约 5 个临时 std::string（各一次堆分配），是响应关键路径上的纯开销。
+    json += '"';
+    json += rn_http_server_json::escapeJsonString(key);
+    json += "\":\"";
+    json += rn_http_server_json::escapeJsonString(value);
+    json += '"';
   }
-  json += "}";
+  json += '}';
   return json;
 }
 
@@ -377,12 +395,8 @@ HybridHttpServer::HybridHttpServer() : HybridObject(TAG) {
 }
 
 HybridHttpServer::~HybridHttpServer() {
-  // 清理
-  std::lock_guard<std::mutex> lock(g_contextMutex);
-  if (g_serverContext) {
-    delete g_serverContext;
-    g_serverContext = nullptr;
-  }
+  // g_serverContext 是进程级全局单例（由 stop()/stopAppServer() 清理 handler），
+  // 不能在单个 HybridHttpServer 实例析构时 delete，否则旧实例被 GC 会破坏运行中的服务。
 }
 
 std::shared_ptr<Promise<double>> HybridHttpServer::start(
@@ -390,8 +404,9 @@ std::shared_ptr<Promise<double>> HybridHttpServer::start(
     const std::function<std::shared_ptr<Promise<
         std::variant<HttpResponse, std::shared_ptr<Promise<HttpResponse>>>>>(
         const HttpRequest &)> &handler,
-    const std::optional<std::string> &host) {
-  return Promise<double>::async([port, handler, host]() -> double {
+    const std::optional<std::string> &host,
+    std::optional<double> workerThreads) {
+  return Promise<double>::async([port, handler, host, workerThreads]() -> double {
     // 创建或更新全局上下文
     {
       std::lock_guard<std::mutex> lock(g_contextMutex);
@@ -407,7 +422,17 @@ std::shared_ptr<Promise<double>> HybridHttpServer::start(
     // 启动服务器
     int portInt = static_cast<int>(port);
     const char *hostCStr = host.has_value() ? host.value().c_str() : nullptr;
-    int actualPort = start_server(portInt, hostCStr, c_request_callback);
+
+    // worker 线程数：0 或省略 = 按 CPU 核数（tokio 默认）。
+    // 非正数一律归 0 —— 负值若透传给 tokio 会 panic（实测过 builder 的断言）。
+    int workerThreadsInt = 0;
+    if (workerThreads.has_value() && workerThreads.value() > 0) {
+      workerThreadsInt = static_cast<int>(workerThreads.value());
+    }
+
+    int actualPort =
+        start_server_with_options(portInt, hostCStr, c_request_callback,
+                                  workerThreadsInt);
 
     if (actualPort > 0) {
       g_serverRunning = true;
@@ -837,12 +862,12 @@ static void c_websocket_callback(const ::WebSocketEvent *cEvent) {
     }
 
     // 文本数据
-    if (cEvent->text_data && cEvent->text_len > 0) {
+    if (cEvent->text_data && cEvent->text_len >= 0) {
       event.textData = std::string(cEvent->text_data, cEvent->text_len);
     }
 
     // 二进制数据
-    if (cEvent->binary_data && cEvent->binary_len > 0) {
+    if (cEvent->binary_data && cEvent->binary_len >= 0) {
       size_t size = static_cast<size_t>(cEvent->binary_len);
       auto buffer = ArrayBuffer::copy(
           reinterpret_cast<const uint8_t *>(cEvent->binary_data), size);
@@ -904,11 +929,11 @@ HybridHttpServer::wsSendBinary(const std::string &connectionId,
 
   return Promise<bool>::async(
       [connectionId, binaryData = std::move(binaryData)]() -> bool {
-        if (binaryData.empty()) {
-          return false;
-        }
-        return ws_send_binary(connectionId.c_str(),
-                              reinterpret_cast<const char *>(binaryData.data()),
+        const char *ptr =
+            binaryData.empty()
+                ? ""
+                : reinterpret_cast<const char *>(binaryData.data());
+        return ws_send_binary(connectionId.c_str(), ptr,
                               static_cast<int>(binaryData.size()));
       });
 }

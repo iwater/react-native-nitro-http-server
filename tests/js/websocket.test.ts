@@ -378,5 +378,8 @@ test('autoRestart: 重启失败时不改动回调归属', async () => {
     '重启没成功就不该重挂回调（此时服务是停的，装了也没用，还会掩盖失败）'
   );
 
+  // 自动重启失败后，服务器应处于未运行状态，再调用 stop() 不应卡死或误认为仍在运行
+  assert.equal((server as any)._isRunning, false, '重启失败后 _isRunning 必须为 false');
+
   await server.stop();
 });

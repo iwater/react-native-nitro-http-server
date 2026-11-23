@@ -36,11 +36,28 @@ namespace rn_http_server_json {
 /// - 不处理 ≥ 0x80 的字节（UTF-8 原样透传；JSON 字符串允许任意 Unicode 码点，
 ///   只有 < 0x20 是禁区）
 inline std::string escapeJsonString(const std::string &str) {
+  // 快路径：先扫一遍找第一个需转义字符。绝大多数 header 名/值一个都没有，
+  // 此时直接返回拷贝 —— 省掉 reserve + 逐字符 switch。这条路径每请求要跑
+  // 2×header 数次，是响应关键路径上的纯开销。
+  const std::size_t n = str.size();
+  std::size_t i = 0;
+  for (; i < n; i++) {
+    const unsigned char c = static_cast<unsigned char>(str[i]);
+    if (c == '"' || c == '\\' || c < 0x20) {
+      break;
+    }
+  }
+  if (i == n) {
+    return str; // 无任何需转义字符
+  }
+
   std::string escaped;
-  escaped.reserve(str.size() + 8);
+  escaped.reserve(n + 8);
+  escaped.append(str, 0, i); // 前缀已确认无需转义，整段拷过去
 
   char buf[8];
-  for (char c : str) {
+  for (; i < n; i++) {
+    const char c = str[i];
     switch (c) {
     case '"':
       escaped += "\\\"";

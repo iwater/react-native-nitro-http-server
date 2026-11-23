@@ -16,7 +16,8 @@ public:
       const std::function<std::shared_ptr<Promise<
           std::variant<HttpResponse, std::shared_ptr<Promise<HttpResponse>>>>>(
           const HttpRequest &)> &handler,
-      const std::optional<std::string> &host) override;
+      const std::optional<std::string> &host,
+      std::optional<double> workerThreads) override;
 
   std::shared_ptr<Promise<bool>>
   sendResponse(const std::string &requestId,

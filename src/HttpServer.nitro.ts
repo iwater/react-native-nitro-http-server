@@ -163,9 +163,13 @@ export interface HttpServer extends HybridObject<{
      * @param port 端口号
      * @param handler 请求处理器
      * @param host 监听的IP地址,默认为 127.0.0.1
+     * @param workerThreads tokio worker 线程数。省略或 0 = 按 CPU 核数（tokio 默认）。
+     *   该 runtime 在 start() 时创建、stop() 时销毁，所以**每次启动都可以改**。
+     *   ⚠️ 线程越少，并发容纳能力越低：handler 里有慢 await（DB/网络）时会排队。
+     *   实测（10 核机）：A 路径从 10 降到 2，高并发吞吐 +13%、每请求 CPU −40%。
      * @returns 实际监听的端口号（0表示失败）
      */
-    start(port: number, handler: RequestHandler, host?: string): Promise<number>
+    start(port: number, handler: RequestHandler, host?: string, workerThreads?: number): Promise<number>
 
     /**
      * 发送 HTTP 响应

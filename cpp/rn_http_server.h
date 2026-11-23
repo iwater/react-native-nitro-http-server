@@ -32,6 +32,7 @@ typedef void (*RequestCallback)(HttpRequest* request);
 /// @param callback 请求回调函数，当收到请求时调用
 /// @return 成功返回实际端口号（>0），失败返回 <=0（注意：不是 bool）
 int start_server(int port, const char* host, RequestCallback callback);
+int start_server_with_options(int port, const char* host, RequestCallback callback, int worker_threads);
 
 /// 发送HTTP响应
 /// 

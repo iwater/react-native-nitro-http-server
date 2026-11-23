@@ -363,3 +363,35 @@ test('C7 高层 handler（index.ts 的 wrapHandler）拿到的 request 带 signa
   assert.equal(captured.signal!.aborted, true, '中断后 signal 应当 aborted');
   assert.equal(ra.pendingRequestCount(), 0, '中断后登记应被摘掉');
 });
+
+test('C8 客户端在 _pump 等待期间断开，不应发射伪造 error 或 end', async () => {
+  let resolveChunk: ((s: string) => void) | null = null;
+  let rejectChunk: ((e: Error) => void) | null = null;
+  const origRead = harness.fake.readRequestBodyChunk;
+  harness.fake.readRequestBodyChunk = () =>
+    new Promise<string>((resolve, reject) => {
+      resolveChunk = resolve;
+      rejectChunk = reject;
+    }) as any;
+
+  try {
+    const server = createServer(() => {});
+    const { req } = await startAndDispatch(server, 'c8');
+    const events: string[] = [];
+    req.on('end', () => events.push('end'));
+    req.on('error', (e: Error) => events.push(`error:${e.message}`));
+
+    // 等 _startReading 的 setTimeout(..., 0) 触发 _pump()
+    await new Promise((r) => setTimeout(r, 10));
+    assert.ok(resolveChunk || rejectChunk, '_pump 应当已经发起 readRequestBodyChunk');
+
+    // 客户端断开（会触发一次合法的 ECONNRESET error:'aborted'），随后原生 readRequestBodyChunk 报错
+    harness.abortHandler('c8');
+    rejectChunk!(new Error('no body found'));
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.deepEqual(events, ['error:aborted'], '客户端已断开时 _pump 不应再发射伪造的 error 或 end');
+  } finally {
+    harness.fake.readRequestBodyChunk = origRead;
+  }
+});
