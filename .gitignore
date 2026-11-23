@@ -6,3 +6,4 @@ lib
 .git
 .yarn
 android/.gradle
+rust-bundle/target/

@@ -1,0 +1,61 @@
+# Cargo.toml
+[package]
+name = "rn-http-server"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance HTTP server for React Native"
+authors = ["iwater <iwater@gmail.com>"]
+license = "ISC"
+repository = "https://github.com/iwater/rn-http-server"
+
+[lib]
+name = "rn_http_server"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+hyper = { version = "0.14", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+once_cell = "1.18"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+thiserror = "1.0"
+futures = "0.3"
+uuid = { version = "1.6", features = ["v4"] }
+bytes = "1.0"
+libc = "0.2"
+async-trait = "0.1.89"
+anyhow = "1.0.100"
+dav-server = { version = "0.5", default-features = false, features = ["hyper", "localfs"] }
+async_zip = { version = "0.0.18", features = ["tokio", "deflate"] }
+# `io` feature 提供 tokio_util::io::ReaderStream（static_file 的流式响应体）。
+# 注意：async_zip 的 "tokio" feature 可能已经把它带上来了，但那是**传递**依赖 ——
+# 显式声明才不会在别人改 async_zip 时静默断掉。
+tokio-util = { version = "0.7.17", features = ["io"] }
+mime_guess = "2.0.5"
+chrono = "0.4"
+multer = "2.1.0"
+mime = "0.3.17"
+urlencoding = "2.1.3"
+regex = "1"
+hyper-tungstenite = "0.11"
+dashmap = "5"
+
+[dev-dependencies]
+reqwest = { version = "0.11", features = ["json", "multipart"] }
+rquickjs = { version = "0.10", features = ["classes", "bindgen"] }
+tokio-tungstenite = "0.20"
+futures-util = "0.3"
+http = "0.2"
+
+# 使用已知兼容的 bindgen 版本
+[build-dependencies]
+bindgen = "0.66.1"  # 使用老一些但稳定的版本
+
+[profile.release]
+opt-level = "z"     # 优化代码尺寸
+lto = true          # 启用链接时优化
+codegen-units = 1   # 降低代码生成单元数以提高优化效果
+panic = "abort"     # panic 时直接终止，不进行栈展开
+strip = true        # 自动剥离符号表 (这就是类似 strip 命令的功能)

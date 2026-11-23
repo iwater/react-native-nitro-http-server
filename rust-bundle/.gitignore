@@ -1,0 +1,9 @@
+target
+
+# macOS
+.DS_Store
+
+# 覆盖率报告（cargo tarpaulin 产物，本地生成，不入库）
+cobertura.xml
+coverage/
+tarpaulin-report.html

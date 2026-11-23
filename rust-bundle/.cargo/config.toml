@@ -1,0 +1,16 @@
+# 这个 crate 的测试套件**必须串行运行**。
+#
+# 原因：所有 server / 事件回调 / CORS 配置 / 请求体累积器都是**进程级全局单例**
+# （CORS_CONFIG、SERVER_HANDLE、RESPONSE_CHANNELS、REQUEST_BODIES...）。
+# libtest 默认按 CPU 核数并行起测试线程，多个用例会同时启停同一批全局状态：
+#   - 请求被路由到别的用例的服务器/回调上 → 断言拿到 502 Bad Gateway
+#   - 某用例 panic 时持有全局 Mutex → 后续用例全报 PoisonError（级联假失败）
+# 症状是「失败集合每次都不一样」，看起来像代码坏了，其实代码是好的。
+#
+# 这里设成默认值，让**裸跑 `cargo test` 也是对的**。
+# 默认 `force = false`，所以显式 `cargo test -- --test-threads=N` 仍可覆盖
+# （只有确实验证并行安全时才该这么做）。
+#
+# 注意：这是给测试用的，不影响 `cargo build`。
+[env]
+RUST_TEST_THREADS = "1"
