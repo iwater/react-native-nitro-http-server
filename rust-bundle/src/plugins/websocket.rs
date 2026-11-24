@@ -1,4 +1,4 @@
-// WebSocket 插件 - 支持 WebSocket 协议升级和双向通信
+// WebSocket plugin supporting protocol upgrade and bidirectional messaging
 use super::{Plugin, PluginAction};
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -14,7 +14,6 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-/// WebSocket 事件类型
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum WebSocketEventType {
@@ -24,39 +23,30 @@ pub enum WebSocketEventType {
     Error = 4,
 }
 
-/// WebSocket 事件数据
 #[derive(Debug, Clone)]
 pub struct WebSocketEvent {
     pub connection_id: String,
     pub event_type: WebSocketEventType,
-    pub path: Option<String>,           // 连接路径
-    pub query: Option<String>,          // 查询字符串 (如 ?token=abc)
-    pub headers: Option<std::collections::HashMap<String, String>>,  // 握手时的 HTTP 头
+    pub path: Option<String>,
+    pub query: Option<String>,
+    pub headers: Option<std::collections::HashMap<String, String>>,
     pub text_data: Option<String>,
     pub binary_data: Option<Vec<u8>>,
     pub close_code: Option<u16>,
     pub close_reason: Option<String>,
-    /// 错误信息（仅 Error 事件）。**不要**再往 text_data 里塞错误文本：
-    /// 下游 TS 侧只认 errorMessage，塞 text_data 会被当成普通消息且错误文本丢失。
+    /// Error message (Error event only; never put error text into `text_data`).
     pub error_message: Option<String>,
 }
 
-/// WebSocket 连接句柄 - 用于发送消息和关闭连接
 pub struct ConnectionHandle {
     sender: mpsc::Sender<ConnectionCommand>,
 }
 
-/// 每条连接的发送队列容量。
-///
-/// 因为入队失败是**同步返回 false**（不再悄悄 spawn 到后台），容量太小会让
-/// 短暂突发就产生 false —— 调用方拿到 false 通常意味着「连接异常」，误报代价高。
-/// 所以从 32 提到 256：256 条积压已经足以说明对端真的消费不动了。
+/// Outbound queue capacity per connection.
+/// Sized at 256 so brief bursts do not prematurely trigger synchronous `try_send` failures.
 const CONNECTION_QUEUE_CAPACITY: usize = 256;
 
-/// 连接命令
-///
-/// `pub(crate)` 是为了让 `src/tests/` 下的用例能断言入队顺序。
-/// 它不对外暴露（crate-type 是 staticlib/cdylib，无 Rust 消费者）。
+/// Outbound connection command (`pub(crate)` for unit tests asserting queue ordering).
 pub(crate) enum ConnectionCommand {
     SendText(String),
     SendBinary(Vec<u8>),
@@ -64,7 +54,6 @@ pub(crate) enum ConnectionCommand {
 }
 
 impl ConnectionHandle {
-    /// 发送文本消息
     pub async fn send_text(&self, message: String) -> Result<(), anyhow::Error> {
         self.sender
             .send(ConnectionCommand::SendText(message))
@@ -72,7 +61,6 @@ impl ConnectionHandle {
             .map_err(|e| anyhow::anyhow!("Failed to send text: {}", e))
     }
 
-    /// 发送二进制消息
     pub async fn send_binary(&self, data: Vec<u8>) -> Result<(), anyhow::Error> {
         self.sender
             .send(ConnectionCommand::SendBinary(data))
@@ -80,7 +68,6 @@ impl ConnectionHandle {
             .map_err(|e| anyhow::anyhow!("Failed to send binary: {}", e))
     }
 
-    /// 关闭连接
     pub async fn close(&self, code: u16, reason: String) -> Result<(), anyhow::Error> {
         self.sender
             .send(ConnectionCommand::Close(code, reason))
@@ -89,10 +76,8 @@ impl ConnectionHandle {
     }
 }
 
-/// WebSocket 事件回调类型
 pub type WebSocketEventCallback = Box<dyn Fn(WebSocketEvent) + Send + Sync + 'static>;
 
-/// WebSocket 插件配置
 #[derive(Debug, Clone)]
 struct WebSocketConfig {
     enabled: bool,
@@ -110,7 +95,6 @@ impl Default for WebSocketConfig {
     }
 }
 
-/// WebSocket 插件
 pub struct WebSocketPlugin {
     config: Arc<Mutex<WebSocketConfig>>,
     connections: Arc<DashMap<String, ConnectionHandle>>,
@@ -118,7 +102,6 @@ pub struct WebSocketPlugin {
 }
 
 impl WebSocketPlugin {
-    /// 创建新的 WebSocket 插件
     pub fn new(mount_path: String) -> Self {
         let mut config = WebSocketConfig::default();
         config.mount_path = mount_path;
@@ -130,7 +113,6 @@ impl WebSocketPlugin {
         }
     }
 
-    /// 设置事件回调
     pub fn set_event_callback<F>(&self, callback: F)
     where
         F: Fn(WebSocketEvent) + Send + Sync + 'static,
@@ -139,22 +121,16 @@ impl WebSocketPlugin {
         *cb = Some(Box::new(callback));
     }
 
-    /// 把一条命令放进连接的发送队列。
+    /// Enqueue a command synchronously via `try_send`.
     ///
-    /// **只用 `try_send`，绝不回退 `tokio::spawn`。** spawn 有两个致命问题：
-    /// 1. 不保序 —— 多个 spawn 出去的任务何时拿到队列 permit 不受调用顺序约束，
-    ///    典型症状是 `close` 插到已排队的 `send` 前面，连接被提前关掉。
-    /// 2. 返回值撒谎 —— `tokio::spawn` 立即返回，于是调用方拿到 true，
-    ///    但消息此刻根本还没进队列（甚至可能永远进不去）。
+    /// Never falls back to `tokio::spawn` because spawned tasks do not preserve
+    /// FIFO ordering (e.g. `close` overtaking `send`), report success before
+    /// enqueueing, and panic when invoked from synchronous C API callers.
     ///
-    /// 另外 spawn 需要 Tokio runtime，而 C API（`ws_send_text` / `ws_send_binary` /
-    /// `ws_close`）是同步上下文 —— 在那里 spawn 会直接 panic。
-    /// `try_send` 是同步的，两个问题一并解决。
-    ///
-    /// 返回值语义：**true = 已入队（保序）**；false = 连接不存在 / 队列已满 /
-    /// 连接已关闭。false 时调用方应重试或视为连接异常，消息**不会**被悄悄丢弃。
+    /// Returns `true` if queued, or `false` if the connection is missing, closed,
+    /// or the queue is full.
     fn enqueue(&self, connection_id: &str, cmd: ConnectionCommand) -> bool {
-        // 先取出 sender 再入队，避免持着 DashMap 的分片锁做可能耗时的操作
+        // Clone sender before try_send to avoid holding the DashMap shard lock.
         let sender = match self.connections.get(connection_id) {
             Some(handle) => handle.sender.clone(),
             None => {
@@ -176,32 +152,23 @@ impl WebSocketPlugin {
         }
     }
 
-    /// 发送文本消息到指定连接
-    ///
-    /// 返回 true 表示已入队；false 表示未入队（连接不存在 / 队列满 / 已关闭），
-    /// 消息不会被丢弃也不会被延迟到后台发送。
+    /// Enqueue a text message (`true` = queued, `false` = missing/full/closed).
     pub fn send_text(&self, connection_id: &str, message: &str) -> bool {
         self.enqueue(connection_id, ConnectionCommand::SendText(message.to_string()))
     }
 
-    /// 发送二进制消息到指定连接（返回值语义同 [`Self::send_text`]）
+    /// Enqueue a binary message (same return semantics as [`Self::send_text`]).
     pub fn send_binary(&self, connection_id: &str, data: &[u8]) -> bool {
         self.enqueue(connection_id, ConnectionCommand::SendBinary(data.to_vec()))
     }
 
-    /// 关闭指定连接（返回值语义同 [`Self::send_text`]）
-    ///
-    /// 与 `send_*` 共用同一条队列，因此 close 一定排在它之前入队的消息之后执行。
+    /// Enqueue a close frame after all previously queued messages on the same queue.
     pub fn close_connection(&self, connection_id: &str, code: u16, reason: &str) -> bool {
         self.enqueue(connection_id, ConnectionCommand::Close(code, reason.to_string()))
     }
 
-    /// **仅测试用**：注入一个连接句柄，并返回它的接收端。
-    ///
-    /// 为什么需要它：生产路径的句柄由 `handle_websocket` 在升级成功后插入，
-    /// 接收端被 send_task 持续消费 —— 想让队列积压到容量上限需要 socket 背压，
-    /// 端到端测试里既不稳定又慢。注入后可以由单测直接控制容量与消费时机，
-    /// 从而确定性地构造「队列满」和「接收端已关闭」这两种状态。
+    /// Test-only: inject a connection handle with a controlled queue capacity to
+    /// deterministically test full-queue and closed-receiver states.
     #[cfg(test)]
     pub(crate) fn new_test_connection(
         &self,
@@ -214,7 +181,6 @@ impl WebSocketPlugin {
         rx
     }
 
-    /// 触发事件回调
     pub(crate) fn emit_event(&self, event: WebSocketEvent) {
         if let Ok(cb) = self.event_callback.lock() {
             if let Some(ref callback) = *cb {
@@ -223,7 +189,6 @@ impl WebSocketPlugin {
         }
     }
 
-    /// 处理 WebSocket 连接
     async fn handle_websocket(
         websocket: HyperWebsocket,
         connection_id: String,
@@ -237,7 +202,6 @@ impl WebSocketPlugin {
             Ok(ws) => ws,
             Err(e) => {
                 crate::log_error!("WebSocket upgrade failed: {}", e);
-                // 触发错误事件
                 if let Ok(cb) = event_callback.lock() {
                     if let Some(ref callback) = *cb {
                         callback(WebSocketEvent {
@@ -261,13 +225,11 @@ impl WebSocketPlugin {
         let (mut ws_sender, mut ws_receiver) = ws.split();
         let (cmd_tx, mut cmd_rx) = mpsc::channel::<ConnectionCommand>(CONNECTION_QUEUE_CAPACITY);
 
-        // 存储连接句柄
         connections.insert(
             connection_id.clone(),
             ConnectionHandle { sender: cmd_tx },
         );
 
-        // 触发 open 事件
         if let Ok(cb) = event_callback.lock() {
             if let Some(ref callback) = *cb {
                 callback(WebSocketEvent {
@@ -294,7 +256,6 @@ impl WebSocketPlugin {
         let close_emitted = Arc::new(AtomicBool::new(false));
         let close_emitted_for_recv = close_emitted.clone();
 
-        // 发送任务
         let send_task = tokio::spawn(async move {
             while let Some(cmd) = cmd_rx.recv().await {
                 let result = match cmd {
@@ -341,7 +302,6 @@ impl WebSocketPlugin {
         let conn_id_for_recv = connection_id.clone();
         let event_cb_for_recv = event_callback.clone();
 
-        // 接收任务
         let recv_task = tokio::spawn(async move {
             while let Some(msg_result) = ws_receiver.next().await {
                 match msg_result {
@@ -411,12 +371,8 @@ impl WebSocketPlugin {
                                 }
                                 break;
                             }
-                            Message::Ping(_) | Message::Pong(_) => {
-                                // 自动处理 ping/pong
-                            }
-                            Message::Frame(_) => {
-                                // 忽略原始帧
-                            }
+                            Message::Ping(_) | Message::Pong(_) => {}
+                            Message::Frame(_) => {}
                         }
                     }
                     Err(e) => {
@@ -443,7 +399,7 @@ impl WebSocketPlugin {
             }
         });
 
-        // 等待任意一个任务完成，并中止另一侧任务避免后台泄漏
+        // Abort the peer task as soon as either side finishes to avoid leaked background tasks.
         let mut send_task = send_task;
         let mut recv_task = recv_task;
         tokio::select! {
@@ -453,10 +409,9 @@ impl WebSocketPlugin {
         send_task.abort();
         recv_task.abort();
 
-        // 清理连接
         connections.remove(&connection_id);
 
-        // 确保异常断连或主动 close 时总能触发一次 Close 事件
+        // Ensure exactly one Close event is emitted even on abrupt disconnects.
         if !close_emitted.swap(true, Ordering::SeqCst) {
             let (code, reason) = close_info
                 .lock()
@@ -522,17 +477,14 @@ impl Plugin for WebSocketPlugin {
 
         let path = req.uri().path();
 
-        // 检查 mount 点（带路径段边界：挂 /ws 不接管 /wsfoo/...）
         if !super::path_matches_mount(path, &config.mount_path) {
             return false;
         }
 
-        // 必须是 WebSocket 升级请求
         is_upgrade_request(req)
     }
 
     async fn handle_request(&self, req: Request<Body>) -> Result<PluginAction, anyhow::Error> {
-        // 生成连接 ID
         let connection_id = Uuid::new_v4().to_string();
 
         crate::log_info!(
@@ -541,11 +493,9 @@ impl Plugin for WebSocketPlugin {
             req.uri().path()
         );
 
-        // 执行 WebSocket 升级
         let path = req.uri().path().to_string();
         let query = req.uri().query().map(|q| q.to_string());
         
-        // 提取 HTTP headers
         let headers: std::collections::HashMap<String, String> = req.headers()
             .iter()
             .filter_map(|(k, v)| {
@@ -560,7 +510,6 @@ impl Plugin for WebSocketPlugin {
 
         let (response, websocket) = upgrade(req, Some(ws_config))?;
 
-        // 启动后台任务处理 WebSocket 连接
         let connections = self.connections.clone();
         let event_callback = self.event_callback.clone();
         let conn_id = connection_id.clone();
@@ -577,28 +526,28 @@ impl Plugin for WebSocketPlugin {
     }
 }
 
-/// 全局 WebSocket 插件实例（用于 C API 访问，兼容旧接口）
+/// Global WebSocket plugin instance (legacy single-mount accessor for C API).
 pub static WEBSOCKET_PLUGIN: once_cell::sync::Lazy<Mutex<Option<Arc<WebSocketPlugin>>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(None));
 
-/// 全局 WebSocket 插件实例列表（支持多挂载点）
+/// Global WebSocket plugin instances across all mounts.
 pub static WEBSOCKET_PLUGINS: once_cell::sync::Lazy<Mutex<Vec<Arc<WebSocketPlugin>>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(Vec::new()));
 
-/// 清空全局 WebSocket 插件列表（新服务器启动时调用）
+/// Clear all global WebSocket plugin registrations (called when starting a new server).
 pub fn clear_global_websocket_plugins() {
     WEBSOCKET_PLUGINS.lock().unwrap().clear();
     *WEBSOCKET_PLUGIN.lock().unwrap() = None;
 }
 
-/// 注册全局 WebSocket 插件实例（追加，支持多挂载点；若已设置 C 回调则立即挂载）
+/// Register a global WebSocket plugin and attach any saved C callback.
 pub fn register_global_websocket_plugin(plugin: Arc<WebSocketPlugin>) {
     *WEBSOCKET_PLUGIN.lock().unwrap() = Some(plugin.clone());
     WEBSOCKET_PLUGINS.lock().unwrap().push(plugin.clone());
     crate::c_api::apply_saved_websocket_callback(&plugin);
 }
 
-/// 设置全局 WebSocket 插件实例（替换）
+/// Replace global WebSocket plugin registration with a single instance.
 pub fn set_global_websocket_plugin(plugin: Arc<WebSocketPlugin>) {
     *WEBSOCKET_PLUGIN.lock().unwrap() = Some(plugin.clone());
     {
@@ -609,12 +558,12 @@ pub fn set_global_websocket_plugin(plugin: Arc<WebSocketPlugin>) {
     crate::c_api::apply_saved_websocket_callback(&plugin);
 }
 
-/// 获取全局 WebSocket 插件实例（返回最后一个注册的实例）
+/// Return the most recently registered global WebSocket plugin instance.
 pub fn get_global_websocket_plugin() -> Option<Arc<WebSocketPlugin>> {
     WEBSOCKET_PLUGIN.lock().unwrap().clone()
 }
 
-/// 获取所有全局 WebSocket 插件实例
+/// Return all registered global WebSocket plugin instances.
 pub fn get_all_global_websocket_plugins() -> Vec<Arc<WebSocketPlugin>> {
     let list = WEBSOCKET_PLUGINS.lock().unwrap().clone();
     if !list.is_empty() {

@@ -1,19 +1,15 @@
 /**
- * LoopRef —— Node handle-ref 模型到「宿主能力」的桥。
+ * LoopRef bridges the Node.js handle-ref model to host keep-alive capabilities.
  *
- * 背景：Node 里 listening server / connected socket 本身就顶住事件循环
- * （libuv 的 handle ref）。本库的宿主未必有这个语义：
- *   - 无头 JSI 宿主：EventLoop 在「无待办」时收泵，需要显式保活；
- *     这类宿主提供 globalThis.__qjsHandleRef 供库登记 handle 存活；
- *   - React Native：App 生命周期归 OS，JS 空转不退出 —— 没有这个全局，
- *     本类所有方法是 no-op，行为与今天完全一致。
+ * In Node.js, a listening server or connected socket keeps the event loop alive
+ * via libuv handle refs. Other JS hosts may differ:
+ *   - Headless JSI hosts: the event loop exits when idle and requires explicit
+ *     keep-alive via `globalThis.__qjsHandleRef`.
+ *   - React Native: app lifecycle is managed by the OS, so `globalThis.__qjsHandleRef`
+ *     is absent and all methods on this class are no-ops.
  *
- * 每 handle 一个 LoopRef 实例；acquire/release 幂等（重复调用不双计/不双减）。
- *
- * 与 react-native-nitro-net / -dns / -udp 的同名文件**代码逐字相同，仅本段头注释
- * 各持一份**（约定各库各持一份、独立演进，不抽共享包；加这段说明本身就意味着不再是
- * 逐字相同）。本库只用到 handle 型：running 的 server 顶住
- * loop，stop() 成功时释放。
+ * Use one LoopRef per handle; `acquire()` and `release()` are idempotent.
+ * Used here so a running server keeps the loop alive until `stop()` succeeds.
  */
 
 interface HostHandleRef {
@@ -21,11 +17,11 @@ interface HostHandleRef {
   release(token: number): void;
 }
 
-// 模块加载时探测一次。宿主能力不会在进程中途出现/消失。
+// Probe once at module load; host capabilities do not change at runtime.
 let host: HostHandleRef | undefined =
   (globalThis as { __qjsHandleRef?: HostHandleRef }).__qjsHandleRef;
 
-/** 仅测试用：替换/清除探测到的宿主能力。必须在创建 LoopRef 实例之前调用 —— 存活实例持有的 token 仍由上一个宿主签发。 */
+/** Test-only: override or clear the detected host handle ref before creating LoopRef instances. */
 export function __setHostHandleRefForTest(h: HostHandleRef | undefined): void {
   host = h;
 }
@@ -38,14 +34,14 @@ export class LoopRef {
     this.label = label;
   }
 
-  /** 已持有时 no-op。 */
+  /** No-op if already acquired. */
   acquire(): void {
     if (host && this.token === null) {
       this.token = host.acquire(this.label);
     }
   }
 
-  /** 未持有时 no-op。 */
+  /** No-op if not currently held. */
   release(): void {
     if (host && this.token !== null) {
       const t = this.token;
@@ -54,7 +50,7 @@ export class LoopRef {
     }
   }
 
-  /** 当前是否正顶着 loop（诊断/测试用）。 */
+  /** Whether the loop ref is currently held (for diagnostics and tests). */
   get refed(): boolean {
     return this.token !== null;
   }

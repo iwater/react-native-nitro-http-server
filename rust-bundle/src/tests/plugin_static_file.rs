@@ -245,10 +245,8 @@ fn test_static_file_plugin_hidden_files() {
     });
 }
 
-// ---- Task 8: mount 前缀匹配边界 ----
+// Mount prefix boundary matching
 
-/// helper 契约：路径段边界。`/static` 只能接管 `/static` 本身与 `/static/...`，
-/// 不能接管 `/staticfoo/...`。
 #[test]
 fn test_mount_prefix_boundary() {
     assert!(crate::plugins::path_matches_mount("/static/a.txt", "/static"));
@@ -259,37 +257,28 @@ fn test_mount_prefix_boundary() {
     assert!(!crate::plugins::path_matches_mount("/stat", "/static"));
 }
 
-/// 尾斜杠等价：配置里写 `"/static/"` 很常见，必须与 `"/static"` 完全等价。
-///
-/// 计划给的 helper 实现**没有**这一条 —— 它会把 `/static/` 归一化漏掉，
-/// 于是 `"/static/a".starts_with("/static/")` 成立但 `rest` = `"a"`（不以 `/` 开头）
-/// → 返回 false。也就是**挂了却永远匹配不上**，比裸 starts_with 还糟。
 #[test]
 fn test_mount_prefix_trailing_slash_is_equivalent() {
     for mount in ["/static", "/static/"] {
         assert!(
             crate::plugins::path_matches_mount("/static/a.txt", mount),
-            "mount={} 应匹配 /static/a.txt",
+            "mount={} should match /static/a.txt",
             mount
         );
         assert!(
             crate::plugins::path_matches_mount("/static", mount),
-            "mount={} 应匹配 /static 本身",
+            "mount={} should match /static",
             mount
         );
         assert!(
             !crate::plugins::path_matches_mount("/staticfoo/a.txt", mount),
-            "mount={} 不该匹配 /staticfoo/a.txt",
+            "mount={} must not match /staticfoo/a.txt",
             mount
         );
     }
 }
 
-/// 插件级：这是本任务真正的用户可见症状 —— 挂 `/static` 的插件会把
-/// `/staticfoo/a.txt` 当成 `/static` 下的 `foo/a.txt` 读走。
-///
-/// 为了让这条有区分力，被碰撞的路径**必须真实存在**：否则修复前后
-/// `should_handle` 都因为「文件不存在」返回 false，测不出差别。
+/// Ensure `/static` does not match `/staticfoo/a.txt` even when `foo/a.txt` exists on disk.
 #[test]
 fn test_static_file_plugin_rejects_prefix_collision() {
     let root = std::env::temp_dir().join(format!("t8_static_{}", uuid::Uuid::new_v4()));
@@ -305,50 +294,36 @@ fn test_static_file_plugin_rejects_prefix_collision() {
         .unwrap();
     assert!(
         !plugin.should_handle(&collided),
-        "挂载 /static 不该接管 /staticfoo/a.txt —— 否则会把它当成 foo/a.txt 从 root_dir 读走"
+        "/static mount must not match /staticfoo/a.txt"
     );
 
-    // 防回归：正常路径仍然要接管
     let normal = Request::builder()
         .uri("/static/foo/a.txt")
         .method("GET")
         .body(Body::empty())
         .unwrap();
-    assert!(plugin.should_handle(&normal), "/static/foo/a.txt 仍应被接管");
+    assert!(plugin.should_handle(&normal), "/static/foo/a.txt should still match");
 
     std::fs::remove_dir_all(&root).ok();
 }
 
-// ===========================================================================
-// Task 13：percent-decode（`should_handle` **与** `handle_inner` 都要）+ HEAD
-// ===========================================================================
+// Percent-decoding and HEAD support
 
-/// 造一个带 uuid 的临时根目录（避免残留与并行用例互相干扰）
 fn t13_root(tag: &str) -> std::path::PathBuf {
     let root = std::env::temp_dir().join(format!("t13_{}_{}", tag, uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).unwrap();
     root
 }
 
-/// helper 契约：`resolve_relative` 必须与 `path_matches_mount` 用**同一套**归一化。
-///
-/// ⚠️ 实测口径（变异校验得出的）：计划给的 `if mount_path == "/"` 版本在
-/// **常见写法**（`"/static"` / `"/static/"`）下与正确版本**等价** —— 因为
-/// `strip_prefix` 失败后会 `unwrap_or("/")`，恰好把尾斜杠的差异掩盖掉。
-/// 只有**重复尾斜杠**（`"/static//"`）才暴露：那时它会给出一条凭空的 "/"，
-/// 于是 `handle_inner` 去服务 root 的 index.html 而不是用户要的文件
-/// —— **服务错文件**，比 404 糟。
-///
-/// 所以这条偏离属**契约加固**（让两个 helper 的归一化真正同源），不是修活 bug。
+/// `resolve_relative` must apply the same normalization as `path_matches_mount`.
 #[test]
 fn test_resolve_relative_consistent_with_path_matches_mount() {
     use crate::plugins::resolve_relative as rr;
 
-    // 与 path_matches_mount 同一口径：先 trim 尾斜杠，"" 与 "/" 都算根挂载
     for mount in ["/static", "/static/", "/static//"] {
         assert_eq!(rr(mount, "/static/a.txt"), "a.txt", "mount={}", mount);
-        assert_eq!(rr(mount, "/static"), "", "mount={} 挂载点本身", mount);
-        assert_eq!(rr(mount, "/static/"), "", "mount={} 挂载点 + 尾斜杠", mount);
+        assert_eq!(rr(mount, "/static"), "", "mount={} exact mount path", mount);
+        assert_eq!(rr(mount, "/static/"), "", "mount={} mount with trailing slash", mount);
     }
     assert_eq!(rr("/", "/a.txt"), "a.txt");
     assert_eq!(rr("", "/a.txt"), "a.txt");
@@ -359,17 +334,12 @@ fn test_resolve_relative_consistent_with_path_matches_mount() {
     assert_eq!(rr("/s", "/s/a%2Bb.txt"), "a+b.txt");
     assert_eq!(rr("/s", "/s/%E6%8A%A5%E5%91%8A.txt"), "报告.txt");
 
-    // 非法序列：urlencoding 对 "%ZZ" 是**宽松**的（原样保留），不报错
+    // Invalid sequences: `urlencoding` keeps malformed `%ZZ` as-is, and invalid UTF-8
+    // (`%FF`) falls back to the raw string without panicking.
     assert_eq!(rr("/s", "/s/a%ZZb.txt"), "a%ZZb.txt");
-    // 解出非法 UTF-8（%FF）时退化回原文，不 panic
     assert_eq!(rr("/s", "/s/a%FFb"), "a%FFb");
 }
 
-/// 插件级：percent 编码路径要能真的**服务到文件**。
-///
-/// ⚠️ 两个断言缺一不可 —— 计划给的用例只测 `should_handle`：
-/// decode 只写在 `handle_inner` 里 → `should_handle` 因 canonicalize 失败返回 false；
-/// 只写在 `should_handle` 里 → 请求进来了但去找字面量 `hello%20world.txt` → 404。
 #[tokio::test]
 async fn test_static_file_percent_decoded_path_is_served() {
     let root = t13_root("decode");
@@ -387,25 +357,20 @@ async fn test_static_file_percent_decoded_path_is_served() {
 
     assert!(
         plugin.should_handle(&make_req()),
-        "percent 编码路径应被接管（只在 handle_inner 里 decode 的话这里就是 false）"
+        "percent-encoded path must be handled"
     );
 
     let resp = match plugin.handle_request(make_req()).await.unwrap() {
         crate::plugins::PluginAction::Handled(r) => r,
-        _ => panic!("静态插件应接管该请求"),
+        _ => panic!("static plugin should handle request"),
     };
-    assert_eq!(
-        resp.status(),
-        200,
-        "只在 should_handle 里 decode 的话，handle_inner 会去找字面量 hello%20world.txt → 404"
-    );
+    assert_eq!(resp.status(), 200);
     let bytes = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     assert_eq!(&bytes[..], b"hi there");
 
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// 插件级：HEAD 必须被插件接管（否则落到用户 callback），且**只回头不带 body**。
 #[tokio::test]
 async fn test_static_file_head_serves_headers_without_body() {
     let root = t13_root("head");
@@ -418,10 +383,7 @@ async fn test_static_file_head_serves_headers_without_body() {
         .method("HEAD")
         .body(Body::empty())
         .unwrap();
-    assert!(
-        plugin.should_handle(&req),
-        "HEAD 必须被接管 —— 否则 HEAD /s/a.txt 会落到用户 callback（拿不到文件头）"
-    );
+    assert!(plugin.should_handle(&req), "HEAD must be handled by static plugin");
 
     let req = Request::builder()
         .uri("/s/a.txt")
@@ -430,25 +392,24 @@ async fn test_static_file_head_serves_headers_without_body() {
         .unwrap();
     let resp = match plugin.handle_request(req).await.unwrap() {
         crate::plugins::PluginAction::Handled(r) => r,
-        _ => panic!("静态插件应接管 HEAD"),
+        _ => panic!("static plugin should handle HEAD"),
     };
     assert_eq!(resp.status(), 200);
     assert_eq!(
         resp.headers().get("content-length").map(|v| v.to_str().unwrap()),
         Some("10"),
-        "HEAD 必须带上文件的 Content-Length"
+        "HEAD must include Content-Length"
     );
     assert_eq!(
         resp.headers().get("content-type").map(|v| v.to_str().unwrap()),
         Some("text/plain; charset=utf-8")
     );
     let bytes = hyper::body::to_bytes(resp.into_body()).await.unwrap();
-    assert_eq!(bytes.len(), 0, "HEAD 不能带 body");
+    assert_eq!(bytes.len(), 0, "HEAD must not include a body");
 
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// 防回归：GET 走流式后，内容必须完整且**仍然带 Content-Length**（不能悄悄变成 chunked）。
 #[tokio::test]
 async fn test_static_file_get_streams_full_body_with_content_length() {
     let root = t13_root("stream");
@@ -464,24 +425,21 @@ async fn test_static_file_get_streams_full_body_with_content_length() {
 
     let resp = match plugin.handle_request(req).await.unwrap() {
         crate::plugins::PluginAction::Handled(r) => r,
-        _ => panic!("静态插件应接管该请求"),
+        _ => panic!("static plugin should handle request"),
     };
     assert_eq!(resp.status(), 200);
     assert_eq!(
         resp.headers().get("content-length").map(|v| v.to_str().unwrap()),
         Some("100000"),
-        "改成流式后必须显式给 Content-Length —— 否则 hyper 会改成 chunked 编码"
+        "streamed response must include explicit Content-Length"
     );
     let bytes = hyper::body::to_bytes(resp.into_body()).await.unwrap();
-    assert_eq!(bytes.len(), 100_000, "流式响应不能截断");
+    assert_eq!(bytes.len(), 100_000, "streamed response must not be truncated");
 
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// ⚠️ 安全回归：decode 会引入 `..`（`%2e%2e`），必须仍然被 canonicalize 边界挡住。
-///
-/// 这是**本次改动新引入的攻击面**：改之前 `%2e%2e` 是字面量目录名，走不出 root；
-/// 改之后它变成 `..`，只能靠 `canonicalize` + `starts_with(root)` 兜住。
+/// Ensure percent-encoded `..` (`%2e%2e`) is still blocked by canonicalization checks.
 #[tokio::test]
 async fn test_static_file_percent_encoded_traversal_still_blocked() {
     let root = t13_root("trav");
@@ -502,7 +460,7 @@ async fn test_static_file_percent_encoded_traversal_still_blocked() {
             .unwrap();
         assert!(
             !plugin.should_handle(&req),
-            "{} 不该被接管（%2e%2e 解码成 .. 后越出了 root）",
+            "{} must not be handled (escapes root)",
             uri
         );
 
@@ -512,16 +470,11 @@ async fn test_static_file_percent_encoded_traversal_still_blocked() {
             .body(Body::empty())
             .unwrap();
         if let Ok(crate::plugins::PluginAction::Handled(resp)) = plugin.handle_request(req).await {
-            assert_ne!(
-                resp.status(),
-                200,
-                "{} 绝不能被当成 200 服务出去",
-                uri
-            );
+            assert_ne!(resp.status(), 200, "{} must never return 200", uri);
             let bytes = hyper::body::to_bytes(resp.into_body()).await.unwrap();
             assert!(
                 !String::from_utf8_lossy(&bytes).contains("TOP SECRET"),
-                "{} 泄露了 root 之外的文件内容",
+                "{} leaked file outside root",
                 uri
             );
         }
@@ -531,17 +484,12 @@ async fn test_static_file_percent_encoded_traversal_still_blocked() {
     std::fs::remove_file(&secret).ok();
 }
 
-/// `canonical_root` 缓存的**失败**不能被永久记住。
-///
-/// 计划只说「在 new / on_load 末尾计算并缓存」。若把失败也缓存成 `None`，
-/// 那么「root 目录在插件构造之后才创建」的路径会**永久静默失效** ——
-/// 改之前每请求重算时它是能自愈的（canonicalize 每次都重试）。
-///
-/// 场景不算生僻：App 首次运行时才创建文档目录，而服务器启动在前。
+/// Failed `canonical_root` resolution must not be cached so directories created
+/// after plugin construction still work.
 #[tokio::test]
 async fn test_static_file_root_created_after_construction_is_served() {
     let base = t13_root("late");
-    let root = base.join("late_root"); // 故意先不创建
+    let root = base.join("late_root"); // Intentionally created after plugin::new
 
     let plugin = StaticFilePlugin::new("/s".to_string(), root.clone());
 
@@ -552,19 +500,18 @@ async fn test_static_file_root_created_after_construction_is_served() {
             .body(Body::empty())
             .unwrap()
     };
-    assert!(!plugin.should_handle(&make_req()), "root 不存在时不该接管");
+    assert!(!plugin.should_handle(&make_req()), "should not handle when root is missing");
 
-    // root 稍后才出现
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("a.txt"), b"late but served").unwrap();
 
     assert!(
         plugin.should_handle(&make_req()),
-        "root 稍后创建后必须能自愈 —— 把 canonicalize 的失败永久缓存住就再也不会接管"
+        "must recover once root directory is created"
     );
     let resp = match plugin.handle_request(make_req()).await.unwrap() {
         crate::plugins::PluginAction::Handled(r) => r,
-        _ => panic!("静态插件应接管该请求"),
+        _ => panic!("static plugin should handle request"),
     };
     assert_eq!(resp.status(), 200);
     let bytes = hyper::body::to_bytes(resp.into_body()).await.unwrap();
@@ -588,9 +535,9 @@ async fn test_static_file_blocks_hidden_directory_components() {
 
     let resp = match plugin.handle_request(req).await.unwrap() {
         crate::plugins::PluginAction::Handled(r) => r,
-        _ => panic!("应返回 403"),
+        _ => panic!("expected 403"),
     };
-    assert_eq!(resp.status(), 403, "默认配置下隐藏目录内的文件必须返回 403");
+    assert_eq!(resp.status(), 403, "files inside hidden directories must return 403 by default");
 
     std::fs::remove_dir_all(&root).ok();
 }
@@ -599,7 +546,7 @@ async fn test_static_file_blocks_hidden_directory_components() {
 async fn test_directory_listing_escapes_html_and_encodes_links() {
     let root = t13_root("xss");
     let evil_name = "a\"<img src=x onerror=alert(1)>#?.txt";
-    // macOS/Linux 允许引号、尖括号、#、? 作为文件名（不含 '/'）
+    // Quotes, angle brackets, `#`, and `?` are valid filename characters on POSIX.
     std::fs::write(root.join(evil_name), b"ok").unwrap();
 
     let plugin = StaticFilePlugin::new("/s".to_string(), root.clone());
@@ -614,13 +561,13 @@ async fn test_directory_listing_escapes_html_and_encodes_links() {
         .unwrap();
     let resp = match plugin.handle_request(req).await.unwrap() {
         crate::plugins::PluginAction::Handled(r) => r,
-        _ => panic!("应返回目录列表"),
+        _ => panic!("expected directory listing"),
     };
     assert_eq!(resp.status(), 200);
     let html = String::from_utf8(hyper::body::to_bytes(resp.into_body()).await.unwrap().to_vec()).unwrap();
-    assert!(!html.contains("<img src=x"), "目录列表 HTML 必须转义 <img 防止 XSS");
-    assert!(html.contains("&lt;img src=x onerror=alert(1)&gt;"), "应包含转义后的文件名");
-    assert!(html.contains("%23%3F.txt"), "href 应对 # 和 ? 进行 URL 编码");
+    assert!(!html.contains("<img src=x"), "HTML must escape <img to prevent XSS");
+    assert!(html.contains("&lt;img src=x onerror=alert(1)&gt;"), "should contain escaped filename");
+    assert!(html.contains("%23%3F.txt"), "href should URL-encode # and ?");
 
     std::fs::remove_dir_all(&root).ok();
 }

@@ -1,4 +1,4 @@
-// 全局 Logging Level reference moved to global.rs
+// Global logging level atomic is defined in global.rs
 
 // Log constants
 pub const LOG_OFF: u8 = 0;

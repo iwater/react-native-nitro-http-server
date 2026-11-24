@@ -6,7 +6,6 @@ use std::fs::File;
 
 use async_zip::base::write::ZipFileWriter;
 use async_zip::Compression;
-// use std::sync::Arc;
 
 #[test]
 fn test_zip_mount_plugin_should_handle() {
@@ -126,11 +125,8 @@ fn test_zip_mount_plugin_content_reading() {
     });
 }
 
-// ===========================================================================
-// Task 14：zip 只在加载时解析一次（请求时零文件 IO）+ 挂载点切片的 panic
-// ===========================================================================
+// In-memory zip caching (zero disk I/O per request) and trailing-slash mount path handling.
 
-/// 造一个带 uuid 的 zip（避免用例之间用同一个文件名互相踩）
 async fn t14_make_zip(tag: &str, entries: &[(&str, &str)]) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("t14_{}_{}.zip", tag, uuid::Uuid::new_v4()));
     let file = tokio::fs::File::create(&path).await.unwrap();
@@ -147,13 +143,7 @@ fn t14_get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).method(Method::GET).body(Body::empty()).unwrap()
 }
 
-/// ⚠️ **panic 回归**：`mount_path` 带尾斜杠 + 请求恰好是挂载点本身。
-///
-/// 旧实现按**字节长度**切片：`uri_path[mount.mount_path.len()..]`。
-/// `mount="/zip/"`（5 字节）而 `uri_path="/zip"`（4 字节）→ 越界 → **panic**。
-/// 而 `path_matches_mount` 认为它匹配（尾斜杠等价），所以 `should_handle` 会放它进来。
-///
-/// 触发条件很普通：配置里写 `"path": "/zip/"`，客户端请求 `/zip`。
+/// Regression check: trailing-slash mount (`/zip/`) with exact mount request (`/zip`) must not panic.
 #[tokio::test]
 async fn test_zip_mount_slash_mount_root_request_does_not_panic() {
     let zip = t14_make_zip("slash", &[("hello.txt", "Hi")]).await;
@@ -162,58 +152,53 @@ async fn test_zip_mount_slash_mount_root_request_does_not_panic() {
     let req = t14_get("/zip");
     assert!(
         plugin.should_handle(&req),
-        "尾斜杠等价：mount=/zip/ 应接管 /zip 本身"
+        "mount=/zip/ should match /zip"
     );
 
-    // 不 panic 即通过；返回 404 是合理结果（zip 里没有名为 "" 的 entry）
     let action = plugin.handle_request(t14_get("/zip")).await;
     match action {
         Ok(crate::plugins::PluginAction::Handled(resp)) => {
-            assert_eq!(resp.status(), 404, "挂载点本身在 zip 里没有对应 entry → 404");
+            assert_eq!(resp.status(), 404, "mount root has no zip entry -> 404");
         }
-        Ok(_) => panic!("应返回 Handled"),
-        Err(e) => panic!("不该是错误（旧实现在这里 panic）：{}", e),
+        Ok(_) => panic!("expected Handled"),
+        Err(e) => panic!("unexpected error: {}", e),
     }
 
     std::fs::remove_file(&zip).ok();
 }
 
-/// 核心：解析过的 zip 常驻内存 —— **把磁盘上的 zip 删掉之后，后续请求仍要能服务**。
-///
-/// 这是「请求时零文件 IO」唯一可观测的判据。旧实现每个请求都 `File::open`，
-/// 删掉文件后必然失败。
+/// Parsed zip stays cached in memory even after the backing zip file is deleted from disk.
 #[tokio::test]
 async fn test_zip_mount_serves_after_zip_file_removed() {
     let zip = t14_make_zip("removed", &[("hello.txt", "Hello Zip World")]).await;
     let plugin = ZipMountPlugin::new("/zip".to_string(), zip.to_string_lossy().to_string());
 
-    // 第一次请求（惰性加载会发生在这里）
+    // First request triggers lazy load.
     let resp = match plugin.handle_request(t14_get("/zip/hello.txt")).await.unwrap() {
         crate::plugins::PluginAction::Handled(r) => r,
-        _ => panic!("应被处理"),
+        _ => panic!("expected Handled"),
     };
     assert_eq!(resp.status(), 200);
     let bytes = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     assert_eq!(bytes, "Hello Zip World");
 
-    // 磁盘上的 zip 消失
+    // Delete zip from disk.
     std::fs::remove_file(&zip).unwrap();
 
-    // 后续请求必须仍然成功 —— 证明没有每请求重开文件
+    // Subsequent requests must still succeed from memory.
     let resp = match plugin.handle_request(t14_get("/zip/hello.txt")).await.unwrap() {
         crate::plugins::PluginAction::Handled(r) => r,
-        _ => panic!("应被处理"),
+        _ => panic!("expected Handled"),
     };
     assert_eq!(
         resp.status(),
         200,
-        "zip 已从磁盘删除，但内容在内存里 —— 仍应服务（旧实现每请求 File::open，这里会失败）"
+        "cached zip must continue serving after file removal"
     );
     let bytes = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     assert_eq!(bytes, "Hello Zip World");
 }
 
-/// 防回归：`on_load` 换了 zip 路径之后，必须**重新加载**而不是继续用旧缓存。
 #[tokio::test]
 async fn test_zip_mount_on_load_switching_zip_path_reloads() {
     let zip_a = t14_make_zip("a", &[("same.txt", "AAA")]).await;
@@ -223,28 +208,26 @@ async fn test_zip_mount_on_load_switching_zip_path_reloads() {
 
     let resp = match plugin.handle_request(t14_get("/zip/same.txt")).await.unwrap() {
         crate::plugins::PluginAction::Handled(r) => r,
-        _ => panic!("应被处理"),
+        _ => panic!("expected Handled"),
     };
     let bytes = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     assert_eq!(bytes, "AAA");
 
-    // 换 zip
     plugin
         .on_load(&serde_json::json!({ "zip_file": zip_b.to_string_lossy() }))
         .unwrap();
 
     let resp = match plugin.handle_request(t14_get("/zip/same.txt")).await.unwrap() {
         crate::plugins::PluginAction::Handled(r) => r,
-        _ => panic!("应被处理"),
+        _ => panic!("expected Handled"),
     };
     let bytes = hyper::body::to_bytes(resp.into_body()).await.unwrap();
-    assert_eq!(bytes, "BBB", "on_load 换了 zip 路径后必须重新加载，不能继续用旧缓存");
+    assert_eq!(bytes, "BBB", "switching zip_file in on_load must invalidate cached reader");
 
     std::fs::remove_file(&zip_a).ok();
     std::fs::remove_file(&zip_b).ok();
 }
 
-/// 防回归：percent 编码的 entry 名仍要能命中（decode 不能被这次改动弄丢）。
 #[tokio::test]
 async fn test_zip_mount_percent_decoded_entry_name() {
     let zip = t14_make_zip("decode", &[("hello world.txt", "spaced")]).await;
@@ -252,25 +235,24 @@ async fn test_zip_mount_percent_decoded_entry_name() {
 
     let resp = match plugin.handle_request(t14_get("/zip/hello%20world.txt")).await.unwrap() {
         crate::plugins::PluginAction::Handled(r) => r,
-        _ => panic!("应被处理"),
+        _ => panic!("expected Handled"),
     };
-    assert_eq!(resp.status(), 200, "percent 编码的 entry 名应能命中");
+    assert_eq!(resp.status(), 200, "percent-encoded entry name must match");
     let bytes = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     assert_eq!(bytes, "spaced");
 
     std::fs::remove_file(&zip).ok();
 }
 
-/// 防回归：zip 不存在时返回**错误**（不 panic、不 200），且之后 zip 出现能自愈。
 #[tokio::test]
 async fn test_zip_mount_missing_zip_errors_then_self_heals() {
     let missing = std::env::temp_dir().join(format!("t14_missing_{}.zip", uuid::Uuid::new_v4()));
     let plugin = ZipMountPlugin::new("/zip".to_string(), missing.to_string_lossy().to_string());
 
     let first = plugin.handle_request(t14_get("/zip/hello.txt")).await;
-    assert!(first.is_err(), "zip 不存在时应返回错误");
+    assert!(first.is_err(), "missing zip must return Err");
 
-    // zip 稍后出现 → 必须能自愈（失败的加载不能被永久缓存）
+    // Failed load is not cached, so creating the zip later self-heals.
     let file = tokio::fs::File::create(&missing).await.unwrap();
     let mut writer = ZipFileWriter::with_tokio(file);
     let builder = async_zip::ZipEntryBuilder::new("hello.txt".to_string().into(), Compression::Deflate);
@@ -279,9 +261,9 @@ async fn test_zip_mount_missing_zip_errors_then_self_heals() {
 
     let resp = match plugin.handle_request(t14_get("/zip/hello.txt")).await.unwrap() {
         crate::plugins::PluginAction::Handled(r) => r,
-        _ => panic!("应被处理"),
+        _ => panic!("expected Handled"),
     };
-    assert_eq!(resp.status(), 200, "zip 稍后创建后必须能自愈");
+    assert_eq!(resp.status(), 200, "zip created later must be served");
     let bytes = hyper::body::to_bytes(resp.into_body()).await.unwrap();
     assert_eq!(bytes, "late zip");
 

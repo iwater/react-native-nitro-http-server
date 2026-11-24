@@ -8,7 +8,7 @@ extern "C" fn test_callback(_request: *mut HttpRequest) {
     println!("Test callback called");
 }
 
-/// 捕获 request_id 后故意不响应，由测试自己决定何时 send_response
+/// Capture `request_id` without responding so the test controls when `send_response` runs.
 static PENDING_REQUEST_ID: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 extern "C" fn capture_request_callback(request: *mut HttpRequest) {
@@ -23,7 +23,6 @@ extern "C" fn capture_request_callback(request: *mut HttpRequest) {
     }
 }
 
-/// 等回调把 request_id 交出来
 async fn await_pending_request_id() -> String {
     for _ in 0..100 {
         if let Some(id) = PENDING_REQUEST_ID.lock().unwrap().take() {
@@ -36,22 +35,18 @@ async fn await_pending_request_id() -> String {
 
 #[test]
 fn test_server_creation() {
-    // 测试 C 接口
     let result = start_server(8080, std::ptr::null(), test_callback);
-    // 注意：在测试环境中可能无法真正启动服务器
-    assert!(result >= 0); // 总是通过，因为实际测试需要运行环境
+    assert!(result >= 0);
 }
 
 #[test]
 fn test_free_functions() {
-    // 测试 free_string
     let c_str = CString::new("test").unwrap();
     let ptr = c_str.into_raw();
     unsafe {
         free_string(ptr);
     }
     
-    // 测试 free_http_request
     let request = Box::new(HttpRequest {
         request_id: CString::new("id").unwrap().into_raw(),
         method: CString::new("GET").unwrap().into_raw(),
@@ -162,7 +157,7 @@ async fn test_invalid_status_code_falls_back_to_500() {
 
     let rid = await_pending_request_id().await;
 
-    // 非法 status 99 + 含控制字符的非法 header 值 + 含非 ASCII 的 header + 一个合法 header
+    // Invalid status 99 + header with control char + non-ASCII obs-text header + valid header.
     let rid_c = CString::new(rid).unwrap();
     let headers = CString::new(
         r#"{"X-Bad": "line1\nline2", "X-Name": "中文文件名.pdf", "X-Ok": "yes"}"#,
@@ -176,19 +171,17 @@ async fn test_invalid_status_code_falls_back_to_500() {
     assert_eq!(resp.status(), 500, "invalid status must fall back to 500");
     assert_eq!(resp.headers().get("x-ok").unwrap(), "yes", "valid header must survive");
     assert!(resp.headers().get("x-bad").is_none(), "header with control char must be dropped, not panic");
-    // http 0.2 的 HeaderValue 允许 obs-text（0x80-0xFF），所以非 ASCII 值是**合法**的，
-    // 会原样透传（客户端读到的是原始 UTF-8 字节）。真正被拒的是控制字符（见上面的 x-bad）。
+    // http 0.2 HeaderValue allows obs-text (0x80-0xFF), so non-ASCII bytes pass through untouched.
     assert_eq!(
         resp.headers().get("x-name").map(|v| v.as_bytes().to_vec()),
         Some("中文文件名.pdf".as_bytes().to_vec()),
-        "非 ASCII header 值是合法 obs-text，应原样透传"
+        "non-ASCII obs-text header value should pass through intact"
     );
 
     run_outside_async(|| crate::c_api::stop_server());
 }
 
-/// `REQUEST_TIMEOUT_SECS` 是全局状态：本用例把它改成 1s，无论断言是否失败都必须复位，
-/// 否则后续用例会继承 1s 超时。
+/// Reset global `REQUEST_TIMEOUT_SECS` back to 30s on drop.
 struct TimeoutResetGuard;
 impl Drop for TimeoutResetGuard {
     fn drop(&mut self) {
@@ -197,8 +190,7 @@ impl Drop for TimeoutResetGuard {
     }
 }
 
-/// config 里的 request_timeout_secs 必须真的生效：设为 1s 后，handler 永不响应
-/// 应在 ~1s 收到 500，而不是等满 30s。
+/// Verify `request_timeout_secs` in config overrides the default 30s timeout.
 #[tokio::test]
 async fn test_request_timeout_configurable() {
     let _reset = TimeoutResetGuard;
@@ -226,7 +218,7 @@ async fn test_request_timeout_configurable() {
     assert_eq!(resp.status(), 500);
     assert!(
         elapsed < std::time::Duration::from_secs(5),
-        "超时配置未生效: {:?}",
+        "configured timeout did not take effect: {:?}",
         elapsed
     );
 
@@ -234,9 +226,7 @@ async fn test_request_timeout_configurable() {
     let _ = PENDING_REQUEST_ID.lock().unwrap().take();
 }
 
-/// 反向验证：超时会抢在「迟到的响应」之前生效。
-/// 1s 超时 + 2s 后才响应 → 客户端在 1s 就拿到 500，JS 那次 send_response 落空。
-/// （这条能区分 config=1 与默认 30：默认 30s 下同样的用例会返回 200。）
+/// Verify timeout (1s) preempts a late response (2s) and cleans up the channel.
 #[tokio::test]
 async fn test_request_timeout_preempts_late_response() {
     let _reset = TimeoutResetGuard;
@@ -266,8 +256,7 @@ async fn test_request_timeout_preempts_late_response() {
 
     let rid = await_pending_request_id().await;
 
-    // 2 秒后才响应（与请求并发）。1s 超时应先到 → 客户端拿 500；
-    // 若超时仍是默认 30s，客户端会在 2s 拿到 200，状态码断言即失败。
+    // Respond after 2s; the 1s timeout should already have returned 500.
     let rid_c = CString::new(rid).unwrap();
     let headers = CString::new("{}").unwrap();
     let responder = tokio::spawn(async move {
@@ -279,20 +268,15 @@ async fn test_request_timeout_preempts_late_response() {
     let resp = handle.await.unwrap();
     let elapsed = start.elapsed();
 
-    assert_eq!(resp.status(), 500, "1s 超时应先于 2s 后才到的响应生效");
-    assert!(elapsed < std::time::Duration::from_secs(5), "超时未生效: {:?}", elapsed);
+    assert_eq!(resp.status(), 500, "1s timeout must fire before 2s response");
+    assert!(elapsed < std::time::Duration::from_secs(5), "timeout did not take effect: {:?}", elapsed);
 
-    // 迟到的响应落空：通道已被超时分支清理，send 返回 false（也不该留下残留）
-    assert!(!responder.await.unwrap(), "超时后通道应已被清理");
+    assert!(!responder.await.unwrap(), "channel must already be cleaned up after timeout");
 
     run_outside_async(|| crate::c_api::stop_app_server());
 }
 
-/// 客户端在等 JS 响应时断开（典型场景：App 退后台 / 用户关页面）。
-///
-/// 实测：hyper 会直接 drop handler future，30s 超时分支**不会**执行——
-/// 等 31s 后两张表仍各残留 1 条，是永久泄漏而非"最多留 30 秒"。
-/// 这条路径只能靠 `RequestStateGuard` 的 Drop 兜底。
+/// Verify `RequestStateGuard` cleans up global maps when hyper drops the future on client disconnect.
 #[tokio::test]
 async fn test_global_maps_cleaned_on_client_disconnect() {
     let port = get_free_port();
@@ -319,7 +303,6 @@ async fn test_global_maps_cleaned_on_client_disconnect() {
     let _rid = await_pending_request_id().await;
     handle.abort();
 
-    // 轮询等清理生效（不写死 sleep，避免 flaky）；guard 未生效时会走到断言失败
     for _ in 0..40 {
         if crate::global::response_channels_len() == base_channels
             && crate::global::request_bodies_len() == base_bodies
@@ -332,12 +315,12 @@ async fn test_global_maps_cleaned_on_client_disconnect() {
     assert_eq!(
         crate::global::response_channels_len(),
         base_channels,
-        "客户端断开后 RESPONSE_CHANNELS 残留在表内"
+        "RESPONSE_CHANNELS leaked on client disconnect"
     );
     assert_eq!(
         crate::global::request_bodies_len(),
         base_bodies,
-        "客户端断开后 REQUEST_BODIES 残留在表内"
+        "REQUEST_BODIES leaked on client disconnect"
     );
 
     run_outside_async(|| crate::c_api::stop_server());
@@ -353,7 +336,7 @@ async fn test_global_maps_cleaned_after_send_response() {
     assert!(actual > 0, "server failed to start");
     wait_for_port(actual as u16).await;
 
-    // 三张表分别取基线：之前的用例可能留下残留，不能假设从 0 开始
+    // Record baseline sizes rather than assuming 0.
     let base_channels = crate::global::response_channels_len();
     let base_bodies = crate::global::request_bodies_len();
     let base_accs = crate::global::chunk_accumulators_len();
@@ -372,8 +355,7 @@ async fn test_global_maps_cleaned_after_send_response() {
     let rid_c = CString::new(rid).unwrap();
     let headers = CString::new("{}").unwrap();
 
-    // 先累积一个 chunk：走 send_response（而不是 end_response）结束时，
-    // 若只清 channels，这张表同样会泄漏
+    // Also accumulate a chunk before send_response to ensure CHUNK_ACCUMULATORS is cleaned up.
     let chunk = CString::new("chunk-data").unwrap();
     assert!(crate::c_api::write_response_chunk(
         rid_c.as_ptr(),
@@ -385,14 +367,13 @@ async fn test_global_maps_cleaned_after_send_response() {
         rid_c.as_ptr(), 200, headers.as_ptr(), std::ptr::null(), 0));
     handle.await.unwrap();
 
-    assert_eq!(crate::global::response_channels_len(), base_channels, "RESPONSE_CHANNELS 泄漏");
-    assert_eq!(crate::global::request_bodies_len(), base_bodies, "REQUEST_BODIES 泄漏");
-    assert_eq!(crate::global::chunk_accumulators_len(), base_accs, "CHUNK_ACCUMULATORS 泄漏");
+    assert_eq!(crate::global::response_channels_len(), base_channels, "RESPONSE_CHANNELS leaked");
+    assert_eq!(crate::global::request_bodies_len(), base_bodies, "REQUEST_BODIES leaked");
+    assert_eq!(crate::global::chunk_accumulators_len(), base_accs, "CHUNK_ACCUMULATORS leaked");
 
     run_outside_async(|| crate::c_api::stop_server());
 }
 
-/// 回调返回一个 X-Accel-Redirect，让 server 去读 root_dir 下的文件
 extern "C" fn accel_redirect_callback(request: *mut HttpRequest) {
     if request.is_null() { return; }
     unsafe {
@@ -434,21 +415,20 @@ async fn test_x_accel_redirect_uses_canonical_root() {
     assert!(actual > 0, "app server failed to start");
     wait_for_port(actual as u16).await;
 
-    // /api/serve 不是静态文件，会落到 callback；callback 用 X-Accel-Redirect 指向真实文件
     let resp = reqwest::get(format!("http://127.0.0.1:{}/api/serve", actual))
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200, "canonical root 未生效时这里会是 404");
-    assert_eq!(resp.headers().get("x-keep").unwrap(), "kept", "其他响应头应保留");
+    assert_eq!(resp.status(), 200, "canonical root should serve the redirected file");
+    assert_eq!(resp.headers().get("x-keep").unwrap(), "kept", "other headers should be preserved");
     assert!(
         resp.headers().get("x-accel-redirect").is_none(),
-        "X-Accel-Redirect 不应出现在最终响应里"
+        "X-Accel-Redirect must be stripped from the final response"
     );
     assert_eq!(
         resp.headers().get("content-type").unwrap(),
         "text/plain; charset=utf-8",
-        "Content-Type 应被文件的 mime 覆盖（不是 callback 给的 application/json）"
+        "Content-Type should match the target file MIME type"
     );
     assert_eq!(resp.text().await.unwrap(), "accel-body");
 
@@ -465,13 +445,8 @@ async fn test_port_out_of_range_rejected() {
     assert_eq!(actual, 0, "port 70000 must be rejected, not truncated to 4464");
 }
 
-// ---- Task 9: C++ escapeJson 修正后的跨层契约 ----
+// ---- Header JSON escaping contract across C++ -> Rust send_response ----
 
-/// 走**真实的 `send_response` 解析路径**，把解析结果用 RESPONSE_CHANNELS 取回来。
-///
-/// 这不是在测 serde_json —— 它验证的是「C++ 序列化出来的 bytes 到了 Rust 侧
-/// 会变成什么」。这条链路的两端（C++ 的 `escapeJsonString` 与这里的
-/// `serde_json::from_str`）必须对「什么算合法 JSON」有一致理解。
 fn send_response_and_collect_headers(
     request_id: &str,
     headers_json: &str,
@@ -487,13 +462,11 @@ fn send_response_and_collect_headers(
     let body = CString::new("ok").unwrap();
 
     let ok = crate::c_api::send_response(rid.as_ptr(), 200, hj.as_ptr(), body.as_ptr(), 2);
-    assert!(ok, "send_response 应成功（channel 已注册）");
+    assert!(ok, "send_response should succeed when channel is registered");
 
-    rx.blocking_recv().expect("应收到 ResponseData").headers
+    rx.blocking_recv().expect("expected ResponseData").headers
 }
 
-/// 修正后的 C++ 产出（控制字符已转义）必须被完整解析，
-/// 且转义序列要还原成真正的控制字符。
 #[test]
 fn test_send_response_parses_escaped_headers() {
     let headers = send_response_and_collect_headers(
@@ -504,24 +477,20 @@ fn test_send_response_parses_escaped_headers() {
     assert_eq!(
         headers.get("X-Multi").map(|s| s.as_str()),
         Some("line1\nline2"),
-        "\\n 应还原成真正的换行"
+        "\\n should unescape to newline"
     );
     assert_eq!(
         headers.get("X-Tab").map(|s| s.as_str()),
         Some("a\tb"),
-        "\\t 应还原成真正的制表符"
+        "\\t should unescape to tab"
     );
     assert_eq!(headers.get("X-Plain").map(|s| s.as_str()), Some("ok"));
 }
 
-/// **修复前的 C++ 产出**（控制字符原样裸放）会让**整段** headers JSON 解析失败
-/// → Rust 侧回退成空 HashMap → 这一次响应的**所有**响应头被静默丢弃。
-///
-/// 这条钉住的就是「为什么 C++ 必须转义控制字符」：不是「值不对」，
-/// 而是**一个坏字节毁掉全部响应头**，且调用方看不到任何错误。
+/// Raw unescaped control characters make the entire JSON parse fail, causing all
+/// response headers to be dropped.
 #[test]
 fn test_send_response_drops_all_headers_on_raw_control_char() {
-    // 注意 `\n` 是真的换行字节（不是 \\n 两个字符）—— 即修复前 C++ 的输出
     let headers = send_response_and_collect_headers(
         "t9-raw",
         "{\"X-Multi\":\"line1\nline2\",\"X-Plain\":\"ok\"}",
@@ -529,17 +498,13 @@ fn test_send_response_drops_all_headers_on_raw_control_char() {
 
     assert!(
         headers.is_empty(),
-        "裸控制字符应让整段 JSON 解析失败（修复前 JS 侧因此看不到任何响应头），实际解析出: {:?}",
+        "raw control char should fail JSON parsing and drop headers, got: {:?}",
         headers
     );
 }
 
-// ---- `res.write(...)` 与 `res.end(ArrayBuffer)` 混用时的 body 合并 ----
+// ---- Merging accumulated chunks with explicit body in send_response ----
 
-/// 在 RESPONSE_CHANNELS 里注册一个 request_id，跑完 `f` 后取回 ResponseData。
-///
-/// 为什么不用真 socket：要断言的是**Rust 侧最终拼出来的 body 字节**，
-/// 起真服务器只会多一层超时/端口噪声，抓不到「哪条通道的字节丢了」。
 fn collect_response_after<F: FnOnce()>(request_id: &str, f: F) -> crate::types::ResponseData {
     let (tx, rx) = tokio::sync::oneshot::channel::<crate::types::ResponseData>();
     crate::global::RESPONSE_CHANNELS
@@ -547,19 +512,10 @@ fn collect_response_after<F: FnOnce()>(request_id: &str, f: F) -> crate::types::
         .unwrap()
         .insert(request_id.to_string(), tx);
     f();
-    rx.blocking_recv().expect("应收到 ResponseData")
+    rx.blocking_recv().expect("expected ResponseData")
 }
 
-/// 回归：`res.write('a')` 的累积块 **和** `res.end(Buffer.from([0x62,0x63]))` 的显式 body
-/// 必须**都**发出去。
-///
-/// 修复前 `send_response` 只读显式 body（`body`/`body_len` 两个参数），
-/// 累积器里的字节被 `cleanup_request_state` 直接丢掉 ⇒ JS 侧
-/// `res.write('a'); res.end(arrayBuffer)` 里的 `'a'` **静默消失**（响应体只剩 arrayBuffer）。
-///
-/// 期望语义来自**真实 node v22.22.2 实测**：
-/// `write('a'); end(Buffer.from([0x62,0x63]))` → body `616263`（即 "abc"）。
-/// ⇒ 先 write 的在前，`end(chunk)` 的在后。
+/// Accumulated chunks (`write_response_chunk`) must be prepended before explicit body (`send_response`).
 #[test]
 fn test_send_response_merges_accumulated_chunks_before_explicit_body() {
     let rid = "t-merge-accumulated-chunks";
@@ -567,7 +523,6 @@ fn test_send_response_merges_accumulated_chunks_before_explicit_body() {
     let hj = CString::new("{}").unwrap();
 
     let data = collect_response_after(rid, || {
-        // 模拟 res.write('a') —— 走 write_response_chunk（累积器通道）
         let chunk = CString::new("a").unwrap();
         assert!(crate::c_api::write_response_chunk(
             rid_c.as_ptr(),
@@ -575,7 +530,6 @@ fn test_send_response_merges_accumulated_chunks_before_explicit_body() {
             1
         ));
 
-        // 模拟 res.end(Buffer.from([0x62, 0x63])) —— 走 sendBinaryResponse → send_response
         let explicit: &[u8] = b"bc";
         assert!(crate::c_api::send_response(
             rid_c.as_ptr(),
@@ -588,14 +542,10 @@ fn test_send_response_merges_accumulated_chunks_before_explicit_body() {
 
     assert_eq!(
         data.body, b"abc",
-        "累积块必须排在显式 body 之前（与 node 一致：write 在前、end 的 chunk 在后）"
+        "accumulated chunks must precede explicit body"
     );
 }
 
-/// **负对照**：没有累积块时（普通 `sendResponse` 路径）显式 body 必须**原样**输出，
-/// 不能被合并逻辑改动。
-///
-/// 没有这条，一个「无条件前置空 buffer」或「无条件把 body 置空」的实现也能让上一条变绿。
 #[test]
 fn test_send_response_without_chunks_keeps_explicit_body() {
     let rid = "t-no-accumulated-chunks";
@@ -613,13 +563,9 @@ fn test_send_response_without_chunks_keeps_explicit_body() {
         ));
     });
 
-    assert_eq!(data.body, b"hello", "无累积块时 body 不应被改动");
+    assert_eq!(data.body, b"hello", "explicit body must pass through unchanged");
 }
 
-/// **只有累积块、显式 body 为空**的路径（`res.write(x); res.end()`）也必须发出去。
-///
-/// 这条覆盖 `send_response(..., null, 0)`：修复前它发出的是**空 body**，
-/// 累积的字节全丢。
 #[test]
 fn test_send_response_with_only_accumulated_chunks() {
     let rid = "t-only-accumulated-chunks";
@@ -642,17 +588,12 @@ fn test_send_response_with_only_accumulated_chunks() {
         ));
     });
 
-    assert_eq!(data.body, b"streamed", "只有累积块时也必须作为 body 发出");
+    assert_eq!(data.body, b"streamed", "accumulated chunks must still be sent when explicit body is empty");
 }
 
 
-// ===========================================================================
-// Task 15：回调路径请求体大小上限（默认 100MB，config 可调，超限 413 且不回调 JS）
-// ===========================================================================
+// Callback path request body size limit (default 100MB, configurable; 413 without calling JS)
 
-/// 记录「回调被调用了几次」并正常回 200。
-///
-/// 为什么需要它：「413 时**不回调 JS**」是这条修复的一半语义，只断言状态码证明不了。
 extern "C" fn recording_callback(request: *mut HttpRequest) {
     CALLBACK_HITS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     crate::tests::test_utils::test_callback_ok(request);
@@ -660,7 +601,6 @@ extern "C" fn recording_callback(request: *mut HttpRequest) {
 
 static CALLBACK_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// `MAX_BODY_SIZE` 是全局状态：无论断言是否失败都必须复位（同 TimeoutResetGuard 的理由）。
 struct MaxBodySizeResetGuard;
 impl Drop for MaxBodySizeResetGuard {
     fn drop(&mut self) {
@@ -685,15 +625,11 @@ async fn start_app_server_with(config_json: &'static str) -> u16 {
     });
     assert!(actual > 0, "server failed to start");
     wait_for_port(actual as u16).await;
-    // wait_for_port 自己会发一个 GET 打中回调，所以计数要在它之后再清零
+    // Reset after wait_for_port because it sends a probe GET that hits the callback.
     CALLBACK_HITS.store(0, std::sync::atomic::Ordering::SeqCst);
     actual as u16
 }
 
-/// 核心：config 的 `max_body_size` 生效 —— 超过就 413，且**不回调 JS**。
-///
-/// 没有上限时 `hyper::body::to_bytes` 会把整个 body 收进内存
-/// （hyper 0.14 的 `to_bytes` 实测无内建上限），一个请求就能把进程撑爆。
 #[tokio::test]
 async fn test_oversized_body_rejected_413() {
     let _reset = MaxBodySizeResetGuard;
@@ -710,21 +646,18 @@ async fn test_oversized_body_rejected_413() {
     assert_eq!(
         resp.status(),
         413,
-        "超过 max_body_size 的请求体必须被拒 —— 否则大 body 直接进内存"
+        "oversized body must be rejected with 413"
     );
     assert_eq!(
         CALLBACK_HITS.load(std::sync::atomic::Ordering::SeqCst),
         0,
-        "413 时不能回调 JS（评审要求：拒绝要在回调之前）"
+        "JS callback must not be invoked when returning 413"
     );
 
     run_outside_async(|| crate::c_api::stop_app_server());
 }
 
-/// ⚠️ 关键：**没有 content-length**（chunked）时超限也必须被拒。
-///
-/// 只做「先查 content-length 头」的实现会在这里放过 —— 那时 2048 字节会全进内存。
-/// 这条用例把「流式累积检查」与「头部预检」区分开：前者才是真正的兜底。
+/// Chunked requests without Content-Length must also be rejected when exceeding `max_body_size`.
 #[tokio::test]
 async fn test_oversized_chunked_body_rejected_413() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -749,19 +682,18 @@ async fn test_oversized_chunked_body_rejected_413() {
     let text = String::from_utf8_lossy(&resp);
     assert!(
         text.starts_with("HTTP/1.1 413"),
-        "chunked（无 content-length）超限也必须 413，实际响应头: {:?}",
+        "oversized chunked body must return 413, got: {:?}",
         &text[..text.len().min(60)]
     );
     assert_eq!(
         CALLBACK_HITS.load(std::sync::atomic::Ordering::SeqCst),
         0,
-        "chunked 超限时也不能回调 JS"
+        "JS callback must not be invoked for oversized chunked body"
     );
 
     run_outside_async(|| crate::c_api::stop_app_server());
 }
 
-/// 防回归：限额**以内**的 body 必须照常放行（别把上限写成「一律 413」）。
 #[tokio::test]
 async fn test_body_within_limit_still_passes() {
     let _reset = MaxBodySizeResetGuard;
@@ -775,17 +707,16 @@ async fn test_body_within_limit_still_passes() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200, "512 < 1024，应正常放行");
+    assert_eq!(resp.status(), 200, "body within limit must succeed");
     assert_eq!(
         CALLBACK_HITS.load(std::sync::atomic::Ordering::SeqCst),
         1,
-        "限额内应正常回调 JS 一次"
+        "callback should be invoked once"
     );
 
     run_outside_async(|| crate::c_api::stop_app_server());
 }
 
-/// 防回归：**默认上限**不能是 0/极小值 —— 没给 max_body_size 时 1MB 的 body 要能过。
 #[tokio::test]
 async fn test_default_limit_allows_1mb_body() {
     let _reset = MaxBodySizeResetGuard;
@@ -799,13 +730,11 @@ async fn test_default_limit_allows_1mb_body() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 200, "默认上限是 100MB，1MB 的 body 必须能过");
+    assert_eq!(resp.status(), 200, "default 100MB limit must allow 1MB body");
 
     run_outside_async(|| crate::c_api::stop_app_server());
 }
 
-/// 覆盖**另一条** to_bytes 调用点：普通 HttpServer（`http_server.rs`）没有 config，
-/// 走全局 `MAX_BODY_SIZE`。这里把全局调小来验证它也被接上了。
 #[tokio::test]
 async fn test_plain_http_server_enforces_body_limit() {
     let _reset = MaxBodySizeResetGuard;
@@ -828,34 +757,28 @@ async fn test_plain_http_server_enforces_body_limit() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), 413, "普通 HttpServer 也要有上限");
+    assert_eq!(resp.status(), 413, "plain HttpServer must also enforce MAX_BODY_SIZE");
     assert_eq!(
         CALLBACK_HITS.load(std::sync::atomic::Ordering::SeqCst),
         0,
-        "普通 HttpServer 超限时也不能回调 JS"
+        "plain HttpServer must not invoke JS callback on 413"
     );
 
     run_outside_async(|| crate::c_api::stop_server());
 }
 
-// ===========================================================================
-// Task 16：getStats 的真实统计
-// ===========================================================================
+// getStats counters
 
-/// 读一次 stats 并**按新契约释放**（返回堆字符串，调用方必须 free_string）。
 fn read_stats() -> serde_json::Value {
     let ptr = crate::c_api::get_server_stats();
-    assert!(!ptr.is_null(), "get_server_stats 不该返回 null");
+    assert!(!ptr.is_null(), "get_server_stats must not return null");
     let text = unsafe { std::ffi::CStr::from_ptr(ptr) }
         .to_string_lossy()
         .into_owned();
     unsafe { crate::c_api::free_string(ptr as *mut std::os::raw::c_char) };
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("stats 必须是合法 JSON: {} / {}", e, text))
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("stats must be valid JSON: {} / {}", e, text))
 }
 
-/// `totalRequests` 必须真的随请求增长。
-///
-/// 用**差值**断言而不是绝对值：计数器是进程级全局状态，前面的用例也会加。
 #[tokio::test]
 async fn test_get_server_stats_total_requests_counts() {
     let before = read_stats()["totalRequests"].as_u64().unwrap();
@@ -874,10 +797,9 @@ async fn test_get_server_stats_total_requests_counts() {
     assert_eq!(
         after["totalRequests"].as_u64().unwrap() - before,
         3,
-        "3 次请求之后 totalRequests 必须 +3（接线前恒为 0）"
+        "totalRequests must increment by 3 after 3 requests"
     );
 
-    // 形状与 status 字段：既有调用方依赖 "status":"running"
     assert_eq!(after["status"].as_str(), Some("running"));
     for key in [
         "totalRequests",
@@ -889,7 +811,7 @@ async fn test_get_server_stats_total_requests_counts() {
     ] {
         assert!(
             after.get(key).and_then(|v| v.as_u64()).is_some(),
-            "字段 {} 必须存在且为非负整数，实际 stats = {}",
+            "field {} must be a non-negative integer, stats = {}",
             key,
             after
         );
@@ -898,17 +820,12 @@ async fn test_get_server_stats_total_requests_counts() {
     run_outside_async(|| crate::c_api::stop_app_server());
 }
 
-/// `errorCount` 必须真的统计「服务器自身没能产出响应」——这里用**超时**触发。
-///
-/// 同时顺带钉 `uptime`：超时窗口本身就是 1s，所以此刻 uptime 必然 >= 1。
-/// （`uptime` 只记录「最近一次 start 的时间戳」，从未启动过才是 0 —— 只断言
-/// `>= 0` 是没有区分力的。）
 #[tokio::test]
 async fn test_get_server_stats_error_count_and_uptime() {
     let _reset = TimeoutResetGuard;
     let before_errors = read_stats()["errorCount"].as_u64().unwrap();
 
-    // request_timeout_secs=1 + 永不响应的回调 → 1s 后走超时分支
+    // 1s timeout + non-responding callback triggers timeout error branch.
     let config = CString::new(r#"{"request_timeout_secs": 1}"#).unwrap();
     let port = get_free_port();
     let host = CString::new("127.0.0.1").unwrap();
@@ -916,7 +833,7 @@ async fn test_get_server_stats_error_count_and_uptime() {
         crate::c_api::start_server_with_config(
             port as i32,
             host.as_ptr(),
-            capture_request_callback, // 只记录 request_id，不响应
+            capture_request_callback,
             config.as_ptr(),
         )
     });
@@ -927,17 +844,17 @@ async fn test_get_server_stats_error_count_and_uptime() {
     let resp = reqwest::get(format!("http://127.0.0.1:{}/slow", actual))
         .await
         .unwrap();
-    assert_eq!(resp.status(), 500, "超时应回 500");
+    assert_eq!(resp.status(), 500, "timeout should return 500");
 
     let after = read_stats();
     assert_eq!(
         after["errorCount"].as_u64().unwrap() - before_errors,
         1,
-        "一次超时必须让 errorCount +1（接线前恒为 0）"
+        "timeout must increment errorCount by 1"
     );
     assert!(
         after["uptime"].as_u64().unwrap() >= 1,
-        "已启动并过了 1s，uptime 必须 >= 1（恒 0 说明 start 时间戳没接上），实际 {}",
+        "uptime must be >= 1 after 1s timeout, got {}",
         after["uptime"]
     );
 
@@ -945,11 +862,9 @@ async fn test_get_server_stats_error_count_and_uptime() {
     let _ = PENDING_REQUEST_ID.lock().unwrap().take();
 }
 
-/// 防回归：`totalRequests` 覆盖**三条** server 路径，不只是 app server。
-/// （普通 HttpServer 与 StaticHttpServer 各有自己的 handle 入口。）
 #[tokio::test]
 async fn test_get_server_stats_counts_plain_and_static_servers() {
-    // 普通 HttpServer
+    // Plain HttpServer
     let before = read_stats()["totalRequests"].as_u64().unwrap();
     let port = get_free_port();
     let host = CString::new("127.0.0.1").unwrap();
@@ -962,7 +877,7 @@ async fn test_get_server_stats_counts_plain_and_static_servers() {
     assert_eq!(
         read_stats()["totalRequests"].as_u64().unwrap() - before,
         1,
-        "普通 HttpServer 的请求也要计数"
+        "plain HttpServer requests must count toward totalRequests"
     );
     run_outside_async(|| crate::c_api::stop_server());
 
@@ -984,26 +899,14 @@ async fn test_get_server_stats_counts_plain_and_static_servers() {
     assert_eq!(
         read_stats()["totalRequests"].as_u64().unwrap() - before,
         1,
-        "StaticHttpServer 的请求也要计数"
+        "StaticHttpServer requests must count toward totalRequests"
     );
     run_outside_async(|| crate::c_api::stop_static_server());
 
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// `start_server_with_options` 的 worker 线程数参数：三种取值都要能起、能服务。
-///
-/// 这条用例的价值全在**边界**上，不在正常值上：
-/// - **`-1` 是真实会发生的调用错误**（JS 侧传了个负数）。tokio 的
-///   `Builder::worker_threads(0)` 会**直接 panic**，所以 c_api 必须把非正数归 0。
-///   这层防御若被删掉，本用例以 panic 收场（而不是静默降级）—— 这就是它的牙齿。
-/// - `0` 必须等价于「不传」= tokio 默认（按 CPU 核数）。
-/// - `2` 是 §6.6.8 实测出来的高并发最优值，必须能正常服务请求。
-///
-/// ⚠️ **不断言实际线程数**：Rust 侧没有可移植的「按名字数线程」API，
-/// 线程数由**行为探针**验证（`sample` 数 `tokio-runtime-worker` 出现次数），
-/// 见报告 §6.6.8「二进制新鲜度用行为探针判」。本用例只保证参数**不会炸**、
-/// 且三种取值都产出**功能正常**的服务器。
+/// Verify `start_server_with_options` handles explicit, negative (clamped to 0), and 0 worker_threads.
 #[tokio::test]
 async fn test_start_server_with_options_worker_threads() {
     for workers in [2i32, -1, 0] {
@@ -1017,19 +920,19 @@ async fn test_start_server_with_options_worker_threads() {
                 workers,
             )
         });
-        assert!(actual > 0, "worker_threads={} 时服务器启动失败", workers);
+        assert!(actual > 0, "failed to start with worker_threads={}", workers);
         wait_for_port(actual as u16).await;
 
         let resp = reqwest::Client::new()
             .get(format!("http://127.0.0.1:{}/probe", actual))
             .send()
             .await
-            .expect("worker_threads={} 时请求失败");
-        assert_eq!(resp.status(), 200, "worker_threads={} 时状态码异常", workers);
+            .expect("request failed");
+        assert_eq!(resp.status(), 200, "unexpected status for worker_threads={}", workers);
         assert_eq!(
             resp.text().await.unwrap(),
             "Hello World",
-            "worker_threads={} 时响应体异常",
+            "unexpected body for worker_threads={}",
             workers
         );
 
@@ -1037,11 +940,7 @@ async fn test_start_server_with_options_worker_threads() {
     }
 }
 
-/// 三参数的 `start_server` 必须与 `start_server_with_options(..., 0)` 等价。
-///
-/// 保留三参数版本是为了 **C ABI 向后兼容**（`rn_http_server.h` 的老调用方、
-/// iOS 已发布的 `.xcframework` 头都不需要改）。这条用例把「等价」钉住：
-/// 若哪天有人把转调改成别的默认值（比如顺手写个 2），这里会红。
+/// Ensure legacy 3-arg `start_server` keeps working for C ABI backwards compatibility.
 #[tokio::test]
 async fn test_start_server_legacy_equals_default_options() {
     let port = get_free_port();
@@ -1049,7 +948,7 @@ async fn test_start_server_legacy_equals_default_options() {
     let actual = run_outside_async(move || {
         crate::c_api::start_server(port as i32, host.as_ptr(), test_callback_ok)
     });
-    assert!(actual > 0, "三参数 start_server 启动失败");
+    assert!(actual > 0, "legacy start_server failed");
     wait_for_port(actual as u16).await;
 
     let resp = reqwest::Client::new()
@@ -1065,8 +964,7 @@ async fn test_start_server_legacy_equals_default_options() {
 #[test]
 fn test_read_request_body_chunk_preserves_utf8_boundaries() {
     let request_id = "test-utf8-chunk";
-    // "ab中文cd" -> 'a'(1), 'b'(1), '中'(3), '文'(3), 'c'(1), 'd'(1) = 10 字节
-    // 用 buffer_size = 4 读取：若不保护边界会截断 '中'（第 2..4 字节）
+    // 10 bytes total; reading with a 4-byte buffer must not split multi-byte UTF-8 characters.
     let data = "ab中文cd".as_bytes();
     {
         let mut bodies = REQUEST_BODIES.lock().unwrap();
@@ -1090,7 +988,7 @@ fn test_read_request_body_chunk_preserves_utf8_boundaries() {
             break;
         }
         let s = std::str::from_utf8(&buf[..n as usize])
-            .expect("每个分块都必须是合法 UTF-8，不能从多字节字符中间切断");
+            .expect("each chunk must be valid UTF-8 without splitting multi-byte chars");
         chunks.push(s.to_string());
     }
 

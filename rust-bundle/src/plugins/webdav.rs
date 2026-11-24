@@ -52,7 +52,6 @@ impl Plugin for WebDavPlugin {
     }
 
     fn on_load(&self, config: &Value) -> Result<(), anyhow::Error> {
-        // 支持运行时更新配置 (如果有必要)
         if let (Some(prefix), Some(root)) = (
             config.get("prefix").and_then(|v| v.as_str()),
             config.get("root").and_then(|v| v.as_str())
@@ -75,12 +74,11 @@ impl Plugin for WebDavPlugin {
         let path = req.uri().path();
         let prefix = self.prefix.lock().unwrap();
         
-        // 空前缀 = 未挂载（该语义保留在调用方，helper 把 "" 当根挂载处理）
+        // Empty prefix means unmounted (path_matches_mount treats "" as "/").
         if prefix.is_empty() {
             return false;
         }
 
-        // 与其它插件统一：带路径段边界的 mount 匹配
         super::path_matches_mount(path, prefix.as_str())
     }
 

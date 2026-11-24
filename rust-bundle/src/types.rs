@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 use std::os::raw::{c_char, c_int};
 use tokio::sync::mpsc;
-// use std::ffi::{CString};
 
-// 响应数据结构
 #[derive(Debug, Clone)]
 pub struct ResponseData {
     pub status_code: u16,
@@ -11,7 +9,7 @@ pub struct ResponseData {
     pub body: Vec<u8>,
 }
 
-// 流式响应数据结构（预留用于未来流式响应增强）
+/// Reserved for future streaming response support.
 #[allow(dead_code)]
 pub struct StreamingResponseData {
     pub status_code: u16,
@@ -19,13 +17,12 @@ pub struct StreamingResponseData {
     pub body_receiver: mpsc::Receiver<Vec<u8>>,
 }
 
-// 请求体数据结构（用于分块读取）
+/// Request body buffer used for chunked reads.
 pub struct RequestBodyData {
     pub data: Vec<u8>,
     pub read_position: usize,
 }
 
-// 请求数据结构
 #[repr(C)]
 #[derive(Debug)]
 pub struct HttpRequest {
@@ -37,18 +34,14 @@ pub struct HttpRequest {
     pub body_len: c_int,
 }
 
-// 使用更简单的回调类型
 pub type RequestCallback = extern "C" fn(*mut HttpRequest);
 
-/// 请求被中断（客户端断开连接）时通知 JS 的回调。
+/// Callback invoked when a client aborts a request before a response is sent.
 ///
-/// 入参是 `request_id`（C 字符串，调用期间有效）。
-/// **为什么需要它**：客户端断开时 hyper 会直接 drop handler future
-/// （见 `RequestStateGuard` 的注释），JS 侧的 handler 此前拿不到任何通知 ——
-/// 只能在发送响应失败或等超时时才间接察觉。
+/// Receives `request_id` (valid only for the duration of the call).
 pub type RequestAbortedCallback = extern "C" fn(*const std::os::raw::c_char);
 
-// 流式响应块累积器（用于累积分块写入的数据）
+/// Accumulator for chunked response writes before finalization.
 pub struct ResponseChunkAccumulator {
     pub chunks: Vec<Vec<u8>>,
     pub status_code: u16,

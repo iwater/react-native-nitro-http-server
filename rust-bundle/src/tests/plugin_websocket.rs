@@ -1,4 +1,4 @@
-// WebSocket 插件单元测试
+// WebSocket plugin unit tests
 use crate::plugins::websocket::{
     WebSocketPlugin, WebSocketEventType, WebSocketEvent, ConnectionCommand,
     set_global_websocket_plugin, get_global_websocket_plugin, WEBSOCKET_PLUGIN,
@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 fn test_websocket_plugin_should_handle() {
     let plugin = WebSocketPlugin::new("/ws".to_string());
     
-    // 1. 非 WebSocket 升级请求不应处理
+    // 1. Non-upgrade requests must be ignored.
     let req = Request::builder()
         .uri("/ws/test")
         .method(Method::GET)
@@ -20,7 +20,7 @@ fn test_websocket_plugin_should_handle() {
         .unwrap();
     assert!(!plugin.should_handle(&req), "Should not handle non-upgrade request");
     
-    // 2. 路径不匹配不应处理
+    // 2. Mismatched path must be ignored.
     let req = Request::builder()
         .uri("/other/path")
         .method(Method::GET)
@@ -32,7 +32,7 @@ fn test_websocket_plugin_should_handle() {
         .unwrap();
     assert!(!plugin.should_handle(&req), "Should not handle wrong path");
     
-    // 3. 正确的 WebSocket 升级请求应该处理
+    // 3. Valid WebSocket upgrade under mount path should be handled.
     let req = Request::builder()
         .uri("/ws/chat")
         .method(Method::GET)
@@ -44,7 +44,7 @@ fn test_websocket_plugin_should_handle() {
         .unwrap();
     assert!(plugin.should_handle(&req), "Should handle valid WebSocket upgrade request");
     
-    // 4. 精确路径匹配
+    // 4. Exact mount path match.
     let req = Request::builder()
         .uri("/ws")
         .method(Method::GET)
@@ -61,7 +61,6 @@ fn test_websocket_plugin_should_handle() {
 fn test_websocket_plugin_on_load() {
     let plugin = WebSocketPlugin::new("/ws".to_string());
     
-    // 测试配置加载
     let config = json!({
         "path": "/websocket",
         "max_message_size": 1048576,
@@ -71,7 +70,6 @@ fn test_websocket_plugin_on_load() {
     let result = plugin.on_load(&config);
     assert!(result.is_ok(), "on_load should succeed");
     
-    // 验证配置更新后路径匹配
     let req = Request::builder()
         .uri("/websocket/test")
         .method(Method::GET)
@@ -83,7 +81,6 @@ fn test_websocket_plugin_on_load() {
         .unwrap();
     assert!(plugin.should_handle(&req), "Should handle new path after config update");
     
-    // 旧路径不再匹配
     let req_old = Request::builder()
         .uri("/ws/test")
         .method(Method::GET)
@@ -100,13 +97,11 @@ fn test_websocket_plugin_on_load() {
 fn test_websocket_plugin_disabled() {
     let plugin = WebSocketPlugin::new("/ws".to_string());
     
-    // 禁用插件
     let config = json!({
         "enabled": false
     });
     plugin.on_load(&config).unwrap();
     
-    // 禁用后不应处理任何请求
     let req = Request::builder()
         .uri("/ws/chat")
         .method(Method::GET)
@@ -121,7 +116,6 @@ fn test_websocket_plugin_disabled() {
 
 #[test]
 fn test_websocket_event_types() {
-    // 验证事件类型值
     assert_eq!(WebSocketEventType::Open as i32, 1);
     assert_eq!(WebSocketEventType::Message as i32, 2);
     assert_eq!(WebSocketEventType::Close as i32, 3);
@@ -136,7 +130,6 @@ fn test_websocket_plugin_name() {
 
 #[test]
 fn test_websocket_event_has_error_message_field() {
-    // 构造一个 Error 事件并验证 error_message 独立于 text_data 存在
     let event = WebSocketEvent {
         connection_id: "c1".to_string(),
         event_type: WebSocketEventType::Error,
@@ -153,9 +146,9 @@ fn test_websocket_event_has_error_message_field() {
     assert!(event.text_data.is_none());
 }
 
-// ---- 整条 C 边界链路的验证 ----
+// ---- C-boundary event dispatch verification ----
 
-/// C 回调里抓到的字段（C 字符串已拷成 String，避免指针生命周期问题）
+/// Captured event fields (copied from C pointers into owned Strings).
 #[derive(Debug)]
 struct CapturedEvent {
     event_type: i32,
@@ -188,7 +181,7 @@ extern "C" fn capture_c_event(ev: *const crate::c_api::CWebSocketEvent) {
     }
 }
 
-/// 全局 WS 插件是全局状态：用完必须精确还原（包括 None），否则污染其它用例。
+/// Restore the global WebSocket plugin state on drop to avoid leaking into other tests.
 struct GlobalWsGuard {
     prev: Option<Arc<WebSocketPlugin>>,
 }
@@ -213,9 +206,6 @@ impl Drop for GlobalWsGuard {
     }
 }
 
-/// 这是本 Task 真正要保证的事：Error 事件的文本必须出现在 C 结构体的
-/// `error_message` 字段里，而**不是** `text_data`。
-/// 修复前 text_data 有值、error_message 字段根本不存在 → TS 侧永远 "Unknown error"。
 #[test]
 fn test_error_message_reaches_c_callback() {
     let plugin = Arc::new(WebSocketPlugin::new("/ws".to_string()));
@@ -241,23 +231,22 @@ fn test_error_message_reaches_c_callback() {
         .lock()
         .unwrap()
         .take()
-        .expect("C 回调没有被调用：set_websocket_callback 没挂上");
+        .expect("C callback was not invoked");
 
-    assert_eq!(captured.event_type, 4, "应该是 Error 事件");
+    assert_eq!(captured.event_type, 4, "expected Error event");
     assert_eq!(
         captured.error_message.as_deref(),
         Some("Receive error: boom"),
-        "error_message 没传到 C 边界"
+        "error_message must reach C callback"
     );
     assert!(
         captured.text_data.is_none(),
-        "Error 事件的文本不应再塞进 text_data，实际为 {:?}",
+        "error message must not be placed in text_data, got {:?}",
         captured.text_data
     );
-    assert_eq!(captured.text_len, 0, "text_len 应与 text_data 一致为 0");
+    assert_eq!(captured.text_len, 0, "text_len should be 0");
 }
 
-/// 非 Error 事件不应带 error_message（避免把正常事件也标成错误）
 #[test]
 fn test_non_error_event_has_no_error_message() {
     let plugin = Arc::new(WebSocketPlugin::new("/ws".to_string()));
@@ -279,17 +268,16 @@ fn test_non_error_event_has_no_error_message() {
         error_message: None,
     });
 
-    let captured = CAPTURED.lock().unwrap().take().expect("C 回调没有被调用");
+    let captured = CAPTURED.lock().unwrap().take().expect("C callback was not invoked");
     assert_eq!(captured.event_type, 2);
     assert!(captured.error_message.is_none());
     assert_eq!(captured.text_data.as_deref(), Some("hello"));
     assert_eq!(captured.text_len, 5);
 }
 
-// ---- Task 7: 发送保序 + 返回值诚实 ----
+// ---- Outbound queue ordering and synchronous return semantics ----
 
-/// 把队列里现有的命令按出队顺序读成种类标记。`try_recv` 是同步的，
-/// 不会让出调度 —— 因此它能区分「同步入队」与「丢给后台任务稍后入队」。
+/// Drain currently queued commands synchronously via `try_recv`.
 fn drain_kinds(rx: &mut tokio::sync::mpsc::Receiver<ConnectionCommand>) -> Vec<&'static str> {
     let mut kinds = Vec::new();
     while let Ok(cmd) = rx.try_recv() {
@@ -302,8 +290,6 @@ fn drain_kinds(rx: &mut tokio::sync::mpsc::Receiver<ConnectionCommand>) -> Vec<&
     kinds
 }
 
-/// 未知连接：三个方法都必须返回 false。
-/// 这是**防回归守卫** —— 修复前后都应通过，钉住的是「连接不存在」这条分支。
 #[test]
 fn test_ws_send_returns_false_for_unknown_connection() {
     let plugin = WebSocketPlugin::new("/ws".to_string());
@@ -312,73 +298,46 @@ fn test_ws_send_returns_false_for_unknown_connection() {
     assert!(!plugin.close_connection("no-such-conn", 1000, ""));
 }
 
-/// 队列满时 `send_text` 必须返回 false。
-/// 修复前它回退 `tokio::spawn` 并**照样返回 true** —— 消息事实上没进队列，
-/// 调用方却以为发成功了。
 #[tokio::test]
 async fn test_ws_send_text_returns_false_when_channel_full() {
     let plugin = WebSocketPlugin::new("/ws".to_string());
-    // 容量 2 且从不消费 → 第 3 条起必然 Full
     let mut rx = plugin.new_test_connection("c1", 2);
 
-    assert!(plugin.send_text("c1", "m1"), "第 1 条应成功入队");
-    assert!(plugin.send_text("c1", "m2"), "第 2 条应成功入队");
-    assert!(
-        !plugin.send_text("c1", "m3"),
-        "队列满时必须返回 false：修复前会回退 spawn 并返回 true"
-    );
+    assert!(plugin.send_text("c1", "m1"));
+    assert!(plugin.send_text("c1", "m2"));
+    assert!(!plugin.send_text("c1", "m3"), "must return false when queue is full");
 
-    // 队列里只应有前两条，m3 没有被偷偷塞进去
     assert_eq!(
         drain_kinds(&mut rx),
         vec!["text", "text"],
-        "满队列时不应有额外的命令入队"
+        "no extra command should be queued when full"
     );
 }
 
-/// 队列满时 `send_binary` / `close_connection` 也必须返回 false。
-/// 修复前这两个方法**总是** spawn 并立即返回 true，完全不看通道状态。
 #[tokio::test]
 async fn test_ws_send_binary_and_close_return_false_when_channel_full() {
     let plugin = WebSocketPlugin::new("/ws".to_string());
     let mut rx = plugin.new_test_connection("c1", 1);
 
-    assert!(plugin.send_binary("c1", b"b1"), "第 1 条应成功入队");
-    assert!(
-        !plugin.send_binary("c1", b"b2"),
-        "队列满时 send_binary 必须返回 false"
-    );
-    assert!(
-        !plugin.close_connection("c1", 1000, "bye"),
-        "队列满时 close_connection 必须返回 false"
-    );
+    assert!(plugin.send_binary("c1", b"b1"));
+    assert!(!plugin.send_binary("c1", b"b2"), "send_binary must return false when full");
+    assert!(!plugin.close_connection("c1", 1000, "bye"), "close_connection must return false when full");
 
     assert_eq!(drain_kinds(&mut rx), vec!["binary"]);
 }
 
-/// 接收端已断开（连接已关闭）时必须返回 false。
-/// 修复前 `send_text` 回退 spawn、另两个总是 spawn，三者都返回 true。
 #[tokio::test]
 async fn test_ws_send_returns_false_when_channel_closed() {
     let plugin = WebSocketPlugin::new("/ws".to_string());
     let rx = plugin.new_test_connection("c1", 8);
-    drop(rx); // 模拟对端任务已退出（send_task 结束 → 接收端被 drop）
+    drop(rx);
 
-    assert!(!plugin.send_text("c1", "m"), "已关闭时 send_text 应返回 false");
-    assert!(!plugin.send_binary("c1", b"m"), "已关闭时 send_binary 应返回 false");
-    assert!(
-        !plugin.close_connection("c1", 1000, ""),
-        "已关闭时 close_connection 应返回 false"
-    );
+    assert!(!plugin.send_text("c1", "m"));
+    assert!(!plugin.send_binary("c1", b"m"));
+    assert!(!plugin.close_connection("c1", 1000, ""));
 }
 
-/// **保序**：三个方法必须按调用顺序进入同一条队列，且是**同步**入队。
-///
-/// 这条在修复前会失败：`send_text` 走 try_send 立刻入队，而 `send_binary` /
-/// `close_connection` 是 `tokio::spawn` —— 在 current_thread runtime 下，
-/// 不让出调度它们根本不会执行，队列里此时只有 text。
-/// 而一旦让出调度，多个 spawn 任务拿到 permit 的先后就不受调用顺序约束了
-/// （这就是「close 插到已排队的 send 前面」的来源）。
+/// All three methods must enqueue synchronously in call order without yielding.
 #[tokio::test]
 async fn test_ws_commands_are_queued_in_order() {
     let plugin = WebSocketPlugin::new("/ws".to_string());
@@ -388,18 +347,14 @@ async fn test_ws_commands_are_queued_in_order() {
     assert!(plugin.send_binary("c1", b"b1"));
     assert!(plugin.close_connection("c1", 1000, "bye"));
 
-    // 不 await、不 yield —— 三条必须已经全部在队列里
     assert_eq!(
         drain_kinds(&mut rx),
         vec!["text", "binary", "close"],
-        "三个方法必须同步入队且保持调用顺序"
+        "commands must enqueue synchronously in call order"
     );
 }
 
-/// 三个方法都必须在**没有 Tokio runtime** 的上下文里可用 —— C API
-/// （`ws_send_text` / `ws_send_binary` / `ws_close`）就是这种同步上下文。
-/// 修复前 `send_binary` / `close_connection` 直接 `tokio::spawn`，
-/// 在这里会 panic。
+/// All three methods must work outside a Tokio runtime (as called from C API).
 #[test]
 fn test_ws_send_does_not_require_tokio_runtime() {
     let plugin = WebSocketPlugin::new("/ws".to_string());
@@ -412,8 +367,6 @@ fn test_ws_send_does_not_require_tokio_runtime() {
     assert_eq!(drain_kinds(&mut rx), vec!["text", "binary", "close"]);
 }
 
-/// Task 8：挂载 `/ws` 不该接管 `/wsfoo/...`。
-/// helper 对了不等于调用点用了它 —— 这条钉的是 `websocket.rs` 的 `should_handle`。
 #[test]
 fn test_websocket_plugin_rejects_prefix_collision() {
     let plugin = WebSocketPlugin::new("/ws".to_string());
@@ -427,9 +380,8 @@ fn test_websocket_plugin_rejects_prefix_collision() {
         .header("Sec-WebSocket-Version", "13")
         .body(Body::empty())
         .unwrap();
-    assert!(!plugin.should_handle(&collided), "挂载 /ws 不该接管 /wsfoo/chat");
+    assert!(!plugin.should_handle(&collided), "/ws mount must not match /wsfoo/chat");
 
-    // 防回归：/ws 本身与其子路径仍要接管
     for uri in ["/ws", "/ws/chat"] {
         let req = Request::builder()
             .uri(uri)
@@ -440,7 +392,7 @@ fn test_websocket_plugin_rejects_prefix_collision() {
             .header("Sec-WebSocket-Version", "13")
             .body(Body::empty())
             .unwrap();
-        assert!(plugin.should_handle(&req), "{} 仍应被接管", uri);
+        assert!(plugin.should_handle(&req), "{} should still match", uri);
     }
 }
 
@@ -465,8 +417,8 @@ fn test_text_message_with_nul_byte_reaches_c_callback_intact() {
         error_message: None,
     });
 
-    let captured = CAPTURED.lock().unwrap().take().expect("C 回调没有被调用");
-    assert_eq!(captured.text_len, 3, "text_len 应为 3，不因含 NUL 被截断");
+    let captured = CAPTURED.lock().unwrap().take().expect("C callback was not invoked");
+    assert_eq!(captured.text_len, 3, "text_len must not be truncated at NUL byte");
 }
 
 #[tokio::test]
@@ -479,7 +431,7 @@ async fn test_ws_send_binary_empty_slice_succeeds() {
     let empty_c = std::ffi::CString::new("").unwrap();
     assert!(
         crate::c_api::ws_send_binary(conn_c.as_ptr(), empty_c.as_ptr(), 0),
-        "0 字节二进制消息应允许入队"
+        "0-byte binary message should enqueue"
     );
     assert_eq!(drain_kinds(&mut rx), vec!["binary"]);
 }
@@ -491,7 +443,7 @@ fn test_set_websocket_callback_before_plugin_registration_and_multi_mount() {
     };
 
     clear_global_websocket_plugins();
-    // 先设置回调，再注册多个插件
+    // Register callback first, then register multiple plugins.
     crate::c_api::set_websocket_callback(capture_c_event);
 
     let p1 = Arc::new(WebSocketPlugin::new("/ws1".to_string()));
@@ -512,9 +464,9 @@ fn test_set_websocket_callback_before_plugin_registration_and_multi_mount() {
         close_reason: None,
         error_message: None,
     });
-    assert!(CAPTURED.lock().unwrap().take().is_some(), "第一个挂载点应自动挂上先前注册的回调");
+    assert!(CAPTURED.lock().unwrap().take().is_some(), "first mount should receive pre-registered callback");
 
-    // 验证 ws_send_text 能路由到 p1（即使 p2 在后）
+    // Verify ws_send_text routes to both p1 and p2.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let _guard = rt.enter();
     let mut rx1 = p1.new_test_connection("c-p1", 4);

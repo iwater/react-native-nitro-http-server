@@ -1,7 +1,5 @@
-// src/HttpServer.nitro.ts
 import { type HybridObject } from 'react-native-nitro-modules'
 
-// HTTP 请求接口
 export interface HttpRequest {
     requestId: string
     method: string
@@ -11,7 +9,6 @@ export interface HttpRequest {
     binaryBody?: ArrayBuffer
 }
 
-// HTTP 响应接口
 export interface HttpResponse {
     statusCode: number
     headers?: Record<string, string>
@@ -19,7 +16,6 @@ export interface HttpResponse {
 
 }
 
-// 服务器统计信息接口
 export interface ServerStats {
     totalRequests: number
     activeConnections: number
@@ -29,32 +25,27 @@ export interface ServerStats {
     errorCount: number
 }
 
-// 基础挂载接口
 interface BaseMount {
     path: string
-    /** 自定义响应头（对 rewrite/websocket/upload mount 为无操作） */
+    /** Custom response headers (no-op for rewrite, websocket, and upload mounts). */
     headers?: Record<string, string>
 }
 
-// WebDAV 挂载
 export interface WebDavMount extends BaseMount {
     type: 'webdav'
     root: string
 }
 
-// Zip 挂载
 export interface ZipMount extends BaseMount {
     type: 'zip'
     zip_file: string
 }
 
-// 目录列表配置
 export interface DirListConfig {
     enabled: boolean
     show_hidden?: boolean
 }
 
-// 静态文件挂载
 export interface StaticMount extends BaseMount {
     type: 'static'
     root: string
@@ -62,270 +53,253 @@ export interface StaticMount extends BaseMount {
     default_index?: string[]
 }
 
-// 上传插件挂载
 export interface UploadMount extends BaseMount {
     type: 'upload'
     temp_dir: string
 }
 
-// Buffer 上传插件挂载 (将文件内容作为 ArrayBuffer 传递到 JS,最大支持 100MB)
+/** Upload mount that passes file contents to JS as an ArrayBuffer (up to 100MB). */
 export interface BufferUploadMount extends BaseMount {
     type: 'buffer_upload'
 }
 
-// 重写规则
 export interface RewriteRule {
-    pattern: string      // 正则表达式模式
-    replacement: string  // 替换目标（支持 $1, $2 等捕获组）
+    /** Regular expression pattern. */
+    pattern: string
+    /** Replacement target (supports capture groups such as $1, $2). */
+    replacement: string
 }
 
-// Rewrite 挂载
 export interface RewriteMount {
     type: 'rewrite'
     rules: RewriteRule[]
 }
 
-// WebSocket 挂载
 export interface WebSocketMount extends BaseMount {
     type: 'websocket'
-    max_message_size?: number  // 最大消息大小（字节），默认 64MB
+    /** Maximum message size in bytes (default: 64MB). */
+    max_message_size?: number
 }
 
 export type Mountable = WebDavMount | ZipMount | StaticMount | UploadMount | BufferUploadMount | RewriteMount | WebSocketMount
 
-// CORS 配置
 export interface CorsConfig {
-    origin?: string          // 默认 "*"
-    methods?: string[]       // 默认常见方法 + WebDAV 方法
-    headers?: string[]       // 默认 ["*"]，preflight 时优先回显 Access-Control-Request-Headers
-    credentials?: boolean    // 默认 false；为 true 时回显请求 Origin
-    max_age?: number         // preflight 缓存秒数
+    /** Allowed origin (default: "*"). */
+    origin?: string
+    /** Allowed HTTP methods (defaults to common HTTP + WebDAV methods). */
+    methods?: string[]
+    /** Allowed headers (default: ["*"]; echoes Access-Control-Request-Headers on preflight). */
+    headers?: string[]
+    /** Allow credentials (default: false; echoes the request Origin when true). */
+    credentials?: boolean
+    /** Preflight cache duration in seconds. */
+    max_age?: number
 }
 
-// 服务器插件配置
 export interface ServerConfig {
-    root_dir?: string                       // 静态文件根目录（可选，作为默认静态挂载点）
-    verbose?: boolean | 'off' | 'error' | 'warn' | 'info' | 'debug'  // 日志等级
-    mime_types?: Record<string, string>     // 自定义 MIME types
-    mounts?: Mountable[]                    // 统一挂载列表
-    /** CORS 配置：true 启用默认（Allow-Origin: *），对象自定义，缺省关闭 */
+    /** Static file root directory (optional, used as the default static mount). */
+    root_dir?: string
+    verbose?: boolean | 'off' | 'error' | 'warn' | 'info' | 'debug'
+    mime_types?: Record<string, string>
+    mounts?: Mountable[]
+    /** CORS configuration: true enables defaults (Allow-Origin: *), object customizes, omitted disables. */
     cors?: boolean | CorsConfig
     /**
-     * 等 JS 回调返回响应的最长时间（秒），默认 30。
-     * 长轮询 / SSE 场景必须调大，否则连接会被硬切断并返回 500。
+     * Maximum time in seconds to wait for the JS handler to return a response (default: 30).
+     * Increase for long-polling or SSE; otherwise connections are terminated with 500.
      *
-     * 注意这是**全局**状态（server 本身是全局单例）：只有显式传本字段才会改，
-     * 重启 config server 时会重新应用。
+     * Global state on the singleton server: only updated when explicitly provided, and
+     * re-applied when restarting a config server.
      */
     request_timeout_secs?: number
     /**
-     * 回调路径的请求体上限（字节），默认 100MB。
+     * Maximum request body size in bytes for the JS callback path (default: 100MB).
      *
-     * 超过就返回 **413** 且**不回调 JS**（拒绝发生在 handler 之前）。大文件上传
-     * 场景需要调大；注意插件路径（static / zip / upload / webdav 等）不读 body，
-     * 不受这个上限约束 —— 只有落到用户 handler 的请求才受限。
+     * Requests exceeding this limit are rejected with 413 before invoking the JS handler.
+     * Plugin mounts (static, zip, upload, webdav, etc.) do not buffer the body here and
+     * are not subject to this limit.
      *
-     * 同样是**全局**状态：只有显式传本字段才会改，重启 config server 时会重新应用。
+     * Global state on the singleton server: only updated when explicitly provided, and
+     * re-applied when restarting a config server.
      */
     max_body_size?: number
 }
 
-// WebSocket 事件类型
 export type WebSocketEventType = 'open' | 'message' | 'close' | 'error'
 
-// WebSocket 事件接口
 export interface WebSocketEvent {
-    connectionId: string           // 连接 ID
-    type: WebSocketEventType       // 事件类型
-    path?: string                  // 连接路径
-    query?: string                 // 查询字符串 (仅 open 事件)
-    headersJson?: string           // HTTP 头 JSON (仅 open 事件)
-    textData?: string              // 文本消息数据
-    binaryData?: ArrayBuffer       // 二进制消息数据
-    closeCode?: number             // 关闭代码
-    closeReason?: string           // 关闭原因
-    errorMessage?: string          // 错误信息
+    connectionId: string
+    type: WebSocketEventType
+    path?: string
+    /** Query string (open event only). */
+    query?: string
+    /** JSON-encoded HTTP headers (open event only). */
+    headersJson?: string
+    textData?: string
+    binaryData?: ArrayBuffer
+    closeCode?: number
+    closeReason?: string
+    errorMessage?: string
 }
 
-// WebSocket 事件处理器类型
 export type WebSocketHandler = (event: WebSocketEvent) => void
 
-// 请求处理器类型
 export type RequestHandler = (request: HttpRequest) => Promise<HttpResponse> | HttpResponse
 
-// HTTP 服务器接口
 export interface HttpServer extends HybridObject<{
     ios: 'swift',
     android: 'kotlin'
 }> {
     /**
-     * 启动 HTTP 服务器
-     * @param port 端口号
-     * @param handler 请求处理器
-     * @param host 监听的IP地址,默认为 127.0.0.1
-     * @param workerThreads tokio worker 线程数。省略或 0 = 按 CPU 核数（tokio 默认）。
-     *   该 runtime 在 start() 时创建、stop() 时销毁，所以**每次启动都可以改**。
-     *   ⚠️ 线程越少，并发容纳能力越低：handler 里有慢 await（DB/网络）时会排队。
-     *   实测（10 核机）：A 路径从 10 降到 2，高并发吞吐 +13%、每请求 CPU −40%。
-     * @returns 实际监听的端口号（0表示失败）
+     * Start the HTTP server.
+     * @param port Port number to bind.
+     * @param handler Request handler callback.
+     * @param host IP address to listen on (default: 127.0.0.1).
+     * @param workerThreads Tokio worker thread count. Omit or 0 to use CPU core count (tokio default).
+     *   The runtime is created on start() and destroyed on stop(), so this can vary per start.
+     *   Fewer threads reduce concurrency under slow awaits (DB/network), though on high-core devices
+     *   reducing worker count can lower mutex contention and per-request CPU overhead.
+     * @returns Actual bound port (0 indicates failure).
      */
     start(port: number, handler: RequestHandler, host?: string, workerThreads?: number): Promise<number>
 
     /**
-     * 发送 HTTP 响应
-     * @param requestId 请求ID
-     * @param response HTTP 响应
-     * @returns 是否发送成功
+     * Send an HTTP response.
+     * @param requestId Request identifier.
+     * @param response HTTP response payload.
+     * @returns Whether the response was sent successfully.
      */
     sendResponse(requestId: string, response: HttpResponse): Promise<boolean>
 
     /**
-     * 停止 HTTP 服务器
+     * Stop the HTTP server.
      */
     stop(): Promise<void>
 
     /**
-     * 获取服务器统计信息
-     * @returns 统计信息
+     * Retrieve server statistics.
      */
     getStats(): Promise<ServerStats>
 
     /**
-     * 获取当前是否正在运行
-     * @returns 服务器是否在运行
+     * Check whether the server is currently running.
      */
     isRunning(): Promise<boolean>
 
     /**
-     * 启动静态文件服务器
-     * @param port 端口号
-     * @param rootDir 静态文件根目录路径
-     * @param host 监听的IP地址,默认为 127.0.0.1
-     * @returns 实际监听的端口号（0表示失败）
+     * Start the static file server.
+     * @param port Port number to bind.
+     * @param rootDir Static file root directory path.
+     * @param host IP address to listen on (default: 127.0.0.1).
+     * @returns Actual bound port (0 indicates failure).
      */
     startStaticServer(port: number, rootDir: string, host?: string): Promise<number>
 
     /**
-     * 停止静态文件服务器
+     * Stop the static file server.
      */
     stopStaticServer(): Promise<void>
 
     /**
-     * 分块读取请求体
-     * @param requestId 请求 ID
-     * @returns 读取的数据块（空字符串表示结束）
+     * Read the next chunk of the request body.
+     * @param requestId Request identifier.
+     * @returns Body chunk string (empty string indicates EOF).
      */
     readRequestBodyChunk(requestId: string): Promise<string>
 
     /**
-     * 分块写入响应体
-     * @param requestId 请求 ID
-     * @param chunk 数据块
-     * @returns 是否写入成功
+     * Write a chunk of the response body.
+     * @param requestId Request identifier.
+     * @param chunk Response body chunk.
+     * @returns Whether the write succeeded.
      */
     writeResponseChunk(requestId: string, chunk: string): Promise<boolean>
 
     /**
-     * 结束响应
-     * @param requestId 请求 ID
-     * @param statusCode HTTP 状态码
-     * @param headersJson 响应头 JSON 字符串
-     * @returns 是否成功
+     * Finalize a streamed response.
+     * @param requestId Request identifier.
+     * @param statusCode HTTP status code.
+     * @param headersJson JSON-encoded response headers.
+     * @returns Whether finalization succeeded.
      */
     endResponse(requestId: string, statusCode: number, headersJson: string): Promise<boolean>
 
     /**
-     * 设置全局 CORS 配置（对所有 server 类型生效，应在 server 启动前调用）
-     * @param corsJson CORS 配置 JSON 字符串："true" 启用默认配置，对象可包含
-     *   origin/methods/headers/credentials/max_age 字段，"false" 关闭
+     * Set global CORS configuration (applies to all server types; call before starting).
+     * @param corsJson JSON string: "true" for defaults, a serialized CorsConfig object, or "false" to disable.
      */
     setCorsConfig(corsJson: string): void
 
     /**
-     * 写入二进制响应体并发送响应（同步复制数据）
-     * 此方法在 JS 线程上安全地复制 ArrayBuffer 数据，避免跨线程访问问题
-     * @param requestId 请求 ID
-     * @param statusCode HTTP 状态码
-     * @param headersJson 响应头 JSON 字符串
-     * @param body 二进制响应体
-     * @returns 是否成功
+     * Send a binary response body (synchronously copies the ArrayBuffer on the JS thread
+     * to avoid cross-thread lifetime issues).
+     * @param requestId Request identifier.
+     * @param statusCode HTTP status code.
+     * @param headersJson JSON-encoded response headers.
+     * @param body Binary response body.
+     * @returns Whether the response was sent successfully.
      */
     sendBinaryResponse(requestId: string, statusCode: number, headersJson: string, body: ArrayBuffer): Promise<boolean>
 
     /**
-     * 启动App HTTP服务器（混合静态文件和回调）
-     * @param port 端口号
-     * @param rootDir 静态文件根目录路径
-     * @param handler 请求处理器
-     * @param host 监听的IP地址,默认为 127.0.0.1
-     * @returns 实际监听的端口号（0表示失败）
+     * Start the App HTTP server (hybrid static files and callback handler).
+     * @param port Port number to bind.
+     * @param rootDir Static file root directory path.
+     * @param handler Request handler callback.
+     * @param host IP address to listen on (default: 127.0.0.1).
+     * @returns Actual bound port (0 indicates failure).
      */
     startAppServer(port: number, rootDir: string, handler: RequestHandler, host?: string): Promise<number>
 
     /**
-     * 停止App HTTP服务器
+     * Stop the App HTTP server.
      */
     stopAppServer(): Promise<void>
 
     /**
-     * 启动带配置的App HTTP服务器（支持插件如 WebDAV、Zip 挂载）
-     * @param port 端口号
-     * @param handler 请求处理器
-     * @param configJson 插件配置 JSON 字符串（可包含 root_dir 指定静态文件根目录）
-     * @param host 监听的IP地址,默认为 127.0.0.1
-     * @returns 实际监听的端口号（0表示失败）
+     * Start a configurable App HTTP server with plugin mounts (e.g. WebDAV, Zip, WebSocket).
+     * @param port Port number to bind.
+     * @param handler Request handler callback.
+     * @param configJson JSON-encoded ServerConfig.
+     * @param host IP address to listen on (default: 127.0.0.1).
+     * @returns Actual bound port (0 indicates failure).
      */
     startServerWithConfig(port: number, handler: RequestHandler, configJson: string, host?: string): Promise<number>
 
-    // ==================== 请求中断通知 ====================
+    // ==================== Request Abort Notification ====================
 
     /**
-     * 设置「请求被客户端中断」处理器。
+     * Register the callback invoked when a client aborts a request before a response is sent.
      *
-     * 客户端在 handler 还没返回响应时断开连接（关标签页 / 取消请求 / 网络断了），
-     * 原生侧会**丢弃 handler future**，此前 JS 侧完全收不到通知 —— 只能在发送响应
-     * 失败或等到 `request_timeout_secs` 超时时才间接察觉。
+     * Global single callback (last write wins), matching `setWebSocketHandler`.
+     * Fires only when no response was sent (not on normal completion, timeout, or handler throw).
      *
-     * 现在注册这个处理器就能在断开的那一刻拿到 `requestId`（回调自动切回 JS 线程）。
-     * 典型用法是中止这个请求正在等的下游操作（DB 查询 / 上游 fetch）。
-     *
-     * ⚠️ 与 `setWebSocketHandler` 一样是**全局单回调，后装者胜**。
-     * ⚠️ 只在「响应从未发出」时触发 —— 正常回完、超时、handler 抛异常都不会触发。
-     *
-     * @param handler 收到被中断请求的 requestId
+     * @param handler Callback receiving the aborted `requestId` on the JS thread.
      */
     setRequestAbortedHandler(handler: (requestId: string) => void): void
 
     // ==================== WebSocket API ====================
 
     /**
-     * 设置 WebSocket 事件处理器
-     * @param handler WebSocket 事件处理器
+     * Register the global WebSocket event handler.
      */
     setWebSocketHandler(handler: WebSocketHandler): void
 
     /**
-     * 发送 WebSocket 文本消息
-     * @param connectionId 连接 ID
-     * @param message 文本消息
-     * @returns 是否发送成功
+     * Send a WebSocket text message.
      */
     wsSendText(connectionId: string, message: string): Promise<boolean>
 
     /**
-     * 发送 WebSocket 二进制消息
-     * @param connectionId 连接 ID
-     * @param data 二进制数据
-     * @returns 是否发送成功
+     * Send a WebSocket binary message.
      */
     wsSendBinary(connectionId: string, data: ArrayBuffer): Promise<boolean>
 
     /**
-     * 关闭 WebSocket 连接
-     * @param connectionId 连接 ID
-     * @param code 关闭代码 (默认 1000)
-     * @param reason 关闭原因
-     * @returns 是否关闭成功
+     * Close a WebSocket connection.
+     * @param connectionId Connection identifier.
+     * @param code Close status code (default: 1000).
+     * @param reason Close reason string.
      */
     wsClose(connectionId: string, code?: number, reason?: string): Promise<boolean>
 }

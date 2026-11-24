@@ -83,9 +83,7 @@ fn test_buffer_upload_plugin_handle_multipart() {
     });
 }
 
-/// Task 6：非 ASCII 文件名必须 percent-encode（机制同 `plugin_upload.rs` 里的详注：
-/// `HeaderValue::from_str` 接受 obs-text 不会 500，但下游 `to_str().unwrap_or("")`
-/// 会把它静默置空）。核心判据 = 值能通过 `to_str()`。
+/// Non-ASCII filenames must be percent-encoded so downstream `HeaderValue::to_str()` succeeds.
 #[test]
 fn test_buffer_upload_non_ascii_filename() {
     let rt = Runtime::new().unwrap();
@@ -116,9 +114,9 @@ fn test_buffer_upload_non_ascii_filename() {
 
                 let raw = headers
                     .get("X-Upload-Filename")
-                    .expect("应存在 X-Upload-Filename");
+                    .expect("X-Upload-Filename should be present");
                 let name = raw.to_str().expect(
-                    "header 值必须是 ASCII 可读 —— obs-text 会被下游 to_str().unwrap_or(\"\") 静默置空",
+                    "header value must be ASCII-readable for downstream to_str()",
                 );
                 assert_eq!(name, urlencoding::encode("报告.pdf").to_string());
                 assert_eq!(name, "%E6%8A%A5%E5%91%8A.pdf");
@@ -126,7 +124,7 @@ fn test_buffer_upload_non_ascii_filename() {
                 assert_eq!(
                     headers
                         .get("X-Upload-Filename-Encoding")
-                        .expect("非 ASCII 时应带 encoding 标记头")
+                        .expect("encoding header must be present for non-ASCII filenames")
                         .to_str()
                         .unwrap(),
                     "percent"
@@ -137,11 +135,8 @@ fn test_buffer_upload_non_ascii_filename() {
     });
 }
 
-/// 向后兼容：纯 ASCII 文件名原样传递、不带 encoding 标记头。
-///
-/// 这条尤其要紧：`HybridHttpServer.cpp:315` 是靠 `x-upload-filename` 的**存在**
-/// 来判定「这是 buffer 上传、body 要当 ArrayBuffer 处理」的，
-/// 所以该头既不能改名、也不能在 ASCII 情况下消失。
+/// Backwards compatibility: plain ASCII filenames pass through unchanged without encoding header.
+/// Note: C++ checks for `x-upload-filename` presence to detect buffer uploads.
 #[test]
 fn test_buffer_upload_ascii_filename_unchanged() {
     let rt = Runtime::new().unwrap();
@@ -172,11 +167,11 @@ fn test_buffer_upload_ascii_filename_unchanged() {
                 assert_eq!(
                     headers.get("X-Upload-Filename").unwrap(),
                     "my report.bin",
-                    "纯 ASCII 文件名必须原样传递（向后兼容）"
+                    "plain ASCII filename must pass through unchanged"
                 );
                 assert!(
                     headers.get("X-Upload-Filename-Encoding").is_none(),
-                    "纯 ASCII 时不应出现 encoding 标记头"
+                    "encoding header must not be added for plain ASCII"
                 );
             }
             _ => panic!("expected PassThrough"),
@@ -184,7 +179,6 @@ fn test_buffer_upload_ascii_filename_unchanged() {
     });
 }
 
-/// Task 8：挂载 `/buffer-upload` 不该接管 `/buffer-uploadfoo`。
 #[test]
 fn test_buffer_upload_plugin_rejects_prefix_collision() {
     let plugin = BufferUploadPlugin::new("/buffer-upload".to_string());
@@ -196,12 +190,11 @@ fn test_buffer_upload_plugin_rejects_prefix_collision() {
         .unwrap();
     assert!(
         !plugin.should_handle(&collided),
-        "挂载 /buffer-upload 不该接管 /buffer-uploadfoo"
+        "/buffer-upload mount must not match /buffer-uploadfoo"
     );
 
-    // 防回归
     for uri in ["/buffer-upload", "/buffer-upload/image"] {
         let req = Request::builder().uri(uri).method(Method::POST).body(Body::empty()).unwrap();
-        assert!(plugin.should_handle(&req), "{} 仍应被接管", uri);
+        assert!(plugin.should_handle(&req), "{} should still match", uri);
     }
 }

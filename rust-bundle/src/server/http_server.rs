@@ -14,13 +14,9 @@ use once_cell::sync::Lazy;
 use crate::types::{RequestCallback, HttpRequest, ResponseData, RequestBodyData};
 use crate::global::{RESPONSE_CHANNELS, REQUEST_BODIES};
 
-/// 进程内请求序号。
-///
-/// `request_id` 的唯一用途是**同进程内**把 JS 侧拿到的 id 与 Rust 侧的
-/// `RESPONSE_CHANNELS` / `REQUEST_BODIES` 条目配对（见 `send_response` 等入口），
-/// 既不落盘、也不跨进程可见，因此**不需要 UUID 的全局唯一性**。
-/// 单调计数器比 `Uuid::new_v4()` 更合适：省掉每次 16 字节 `getentropy`
-/// 系统调用与 36 字符 String（A 路径 CPU 剖面实测 `getentropy` 占 4.7%）。
+/// Monotonic in-process request sequence number.
+/// `request_id` only pairs JS responses with in-memory `RESPONSE_CHANNELS` / `REQUEST_BODIES`
+/// entries in the same process, avoiding per-request `Uuid::new_v4()` entropy syscalls.
 static REQUEST_SEQ: AtomicU64 = AtomicU64::new(1);
 
 pub struct HttpServer {
@@ -42,29 +38,20 @@ impl HttpServer {
         }
     }
     
-    /// 启动服务器，返回实际监听的端口（0 = 失败）。
+    /// Start the server and return the actual bound port (0 on failure).
     ///
-    /// `worker_threads`：tokio worker 线程数。
-    /// - `0` = 按 CPU 核数（tokio 默认）
-    /// - `>0` = 指定线程数
-    ///
-    /// 该 runtime 在每次 `start()` 时新建、`stop()` 时随 `HttpServer` 一起销毁，
-    /// 所以**每次启动都可以改**（与 nitro-net 的全局 `OnceCell` runtime 不同）。
-    ///
-    /// 实测（10 核机，A 路径 native fast path）：默认 10 个 worker 是**过配** ——
-    /// 各 worker 只有 14~23% 忙碌，而全局 Mutex（`RESPONSE_CHANNELS` /
-    /// `REQUEST_BODIES`）竞争 + 跨线程唤醒合计占 11.4% CPU。降到 2 个后
-    /// 高并发吞吐 **+13%**、每请求 CPU **−40%**。
-    /// ⚠️ 但线程越少，并发容纳能力越低：handler 里有慢 `await`（DB/网络）时会排队。
+    /// `worker_threads`: `0` uses tokio's CPU-core default; `>0` sets an explicit count.
+    /// The runtime is created per `start()` and dropped with `HttpServer` on stop, so
+    /// worker count can vary across starts. Fewer threads reduce concurrency under slow
+    /// awaits, though lowering worker count on high-core machines can lower mutex contention.
     pub fn start(&mut self, worker_threads: u32) -> u16 {
         let callback = self.callback;
         let host = self.host.clone();
         let port = self.port;
         
-        // 解析 host 字符串为 IP 地址
         let addr = crate::utils::resolve_bind_addr(&host, port);
 
-        // 先创建 Runtime，因为 AddrIncoming::bind 需要在 Tokio Runtime 上下文中运行
+        // Build runtime before binding because AddrIncoming::bind requires an active Tokio reactor.
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         if worker_threads > 0 {
             builder.worker_threads(worker_threads as usize);
@@ -80,10 +67,8 @@ impl HttpServer {
             }
         };
 
-        // 进入 Runtime 上下文，确保 AddrIncoming::bind 可以找到 reactor
         let _guard = rt.enter();
 
-        // 使用 try_bind 风格的 AddrIncoming::bind 避免 panic
         let incoming = match hyper::server::conn::AddrIncoming::bind(&addr) {
             Ok(inc) => inc,
             Err(e) => {
@@ -135,7 +120,7 @@ async fn handle_request(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
 
-    // preflight 直接应答，不回调 JS
+    // Answer preflight directly without invoking JS.
     if let Some(resp) = crate::cors::preflight_response(&req) {
         return Ok(resp);
     }
@@ -149,22 +134,19 @@ async fn handle_request_inner(
     req: Request<Body>,
     callback: RequestCallback,
 ) -> Result<Response<Body>, hyper::Error> {
-    // getStats 的 totalRequests：每个进入处理的请求加一次（含插件/回调两条路）
     crate::global::TOTAL_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     let method = req.method().to_string();
-    // 使用 path_and_query() 获取完整路径（包含 query 字符串）
     let path = req.uri().path_and_query()
         .map(|pq| pq.as_str().to_string())
         .unwrap_or_else(|| req.uri().path().to_string());
     
-    // 收集头部
     let mut headers = HashMap::new();
     for (key, value) in req.headers() {
         headers.insert(key.to_string(), value.to_str().unwrap_or("").to_string());
     }
     
-    // 读取请求体（带全局上限；超限直接 413，**不回调 JS**）
+    // Enforce global body size limit; reject with 413 without invoking JS.
     let body_bytes = match crate::utils::read_body_limited(
         req.into_body(),
         crate::global::MAX_BODY_SIZE.load(std::sync::atomic::Ordering::Relaxed),
@@ -175,10 +157,8 @@ async fn handle_request_inner(
         Err(resp) => return Ok(resp),
     };
     
-    // 生成请求 ID（进程内单调序号，见 REQUEST_SEQ 的说明）
     let request_id = REQUEST_SEQ.fetch_add(1, AtomicOrdering::Relaxed).to_string();
     
-    // 将 headers 转换为 JSON 字符串
     let headers_json = match serde_json::to_string(&headers) {
         Ok(json) => json,
         Err(e) => {
@@ -187,16 +167,13 @@ async fn handle_request_inner(
         }
     };
     
-    // 创建响应通道
     let (tx, rx) = oneshot::channel::<ResponseData>();
     
-    // 将发送端存储到全局映射表
     {
         let mut channels = RESPONSE_CHANNELS.lock().unwrap();
         channels.insert(request_id.clone(), tx);
     }
     
-    // 将请求体存储到全局映射表（用于分块读取）
     {
         let mut bodies = REQUEST_BODIES.lock().unwrap();
         bodies.insert(request_id.clone(), RequestBodyData {
@@ -205,21 +182,17 @@ async fn handle_request_inner(
         });
     }
     
-    // 兜底清理：条目一旦入表就交给 guard，无论后续是正常返回、超时、还是
-    // future 被 hyper 丢弃（客户端断开），都不会留下残留
+    // Ensure global request maps are cleaned up on return, timeout, or hyper future drop.
     let _state_guard = crate::global::RequestStateGuard::new(request_id.clone());
 
-    // 创建 C 字符串
     let request_id_c = CString::new(request_id.clone()).unwrap_or_default();
     let method_c = CString::new(method).unwrap_or_default();
     let path_c = CString::new(path).unwrap_or_default();
     let headers_json_c = CString::new(headers_json).unwrap_or_default();
     
-    // 对于 body，不能使用 CString，因为二进制数据可能包含 \0 字节
-    // 直接分配内存并复制数据（capacity 契约见 utils::alloc_request_body）
+    // Binary body may contain NUL bytes, so pass raw buffer + length instead of CString.
     let (body_ptr, body_len) = crate::utils::alloc_request_body(&body_bytes);
     
-    // 创建 HttpRequest 结构体
     let http_request = Box::new(HttpRequest {
         request_id: request_id_c.into_raw(),
         method: method_c.into_raw(),
@@ -229,14 +202,11 @@ async fn handle_request_inner(
         body_len: body_len as c_int,
     });
     
-    // 回调到 C 代码
     callback(Box::into_raw(http_request));
     
-    // 等待响应（超时可配，默认 30s；长轮询/SSE 需调大，见 REQUEST_TIMEOUT_SECS）
     let timeout_secs = crate::global::REQUEST_TIMEOUT_SECS.load(std::sync::atomic::Ordering::Relaxed);
     match tokio::time::timeout(Duration::from_secs(timeout_secs), rx).await {
         Ok(Ok(response_data)) => {
-            // 收到响应，构建 HTTP 响应（非法 status/header 由 build_response 兜底，不 panic）
             Ok(crate::utils::build_response(
                 response_data.status_code,
                 response_data.headers,
@@ -244,11 +214,9 @@ async fn handle_request_inner(
             ))
         }
         Ok(Err(_)) => {
-            // Channel 被关闭（发送端被 drop）
             crate::log_error!("Response channel closed for request {}", request_id);
             crate::global::ERROR_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             
-            // 清理该请求的全部全局状态（channels + bodies + accumulators）
             crate::global::cleanup_request_state(&request_id);
 
             Ok(Response::builder()
@@ -257,11 +225,9 @@ async fn handle_request_inner(
                 .unwrap())
         }
         Err(_) => {
-            // 超时
             crate::log_error!("Response timeout for request {}", request_id);
             crate::global::ERROR_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             
-            // 清理该请求的全部全局状态（channels + bodies + accumulators）
             crate::global::cleanup_request_state(&request_id);
 
             Ok(Response::builder()

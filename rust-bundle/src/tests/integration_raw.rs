@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 use reqwest::StatusCode;
 
-/// 把请求体原样回给客户端：用于验证 body 指针 / 长度在 C 边界两侧的一致性。
-/// 注意必须先拷成 Vec 再 free —— free_http_request 会回收 req.body。
+/// Echo the request body back to verify pointer/length integrity across the C boundary.
+/// Must copy into a Vec before `free_http_request` frees `req.body`.
 extern "C" fn echo_body_callback(request: *mut HttpRequest) {
     if request.is_null() { return; }
     unsafe {
@@ -37,7 +37,7 @@ async fn test_raw_server_integration() {
     
     let server_task = tokio::spawn(async move {
         let mut server = HttpServer::new(free_port, "127.0.0.1".to_string(), test_callback_ok);
-        server.start(0); // 0 = tokio 默认（按 CPU 核数）
+        server.start(0); // 0 = tokio default (CPU core count)
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
@@ -62,15 +62,14 @@ async fn test_raw_server_integration() {
     server_task.abort();
 }
 
-/// body 必须原样穿过 C 边界。现有用例虽然 POST 了 "data"，但回调根本不读 body，
-/// 所以 body 分配（alloc_request_body）的指针 / 长度正确性此前没有断言覆盖。
+/// Verify binary and UTF-8 request bodies round-trip intact across the C boundary.
 #[tokio::test]
 async fn test_raw_server_body_roundtrip() {
     let free_port = get_free_port();
 
     let server_task = tokio::spawn(async move {
         let mut server = HttpServer::new(free_port, "127.0.0.1".to_string(), echo_body_callback);
-        server.start(0); // 0 = tokio 默认（按 CPU 核数）
+        server.start(0); // 0 = tokio default (CPU core count)
         loop {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
@@ -81,10 +80,10 @@ async fn test_raw_server_body_roundtrip() {
     let base_url = format!("http://127.0.0.1:{}", free_port);
 
     for payload in [
-        vec![0x41u8; 1],                     // 最小
-        "hello 中文".as_bytes().to_vec(),      // 多字节 UTF-8
-        vec![0u8, 1, 2, 255, 0, 42],         // 含 \0 与 0xFF，二进制安全
-        vec![0x41u8; 70000],                 // 大于常见分配粒度
+        vec![0x41u8; 1],                     // 1-byte minimal payload
+        "hello 中文".as_bytes().to_vec(),      // Multi-byte UTF-8
+        vec![0u8, 1, 2, 255, 0, 42],         // Binary-safe with NUL and 0xFF
+        vec![0x41u8; 70000],                 // Larger than typical buffer sizes
     ] {
         let resp = client
             .post(format!("{}/echo", base_url))
@@ -96,7 +95,7 @@ async fn test_raw_server_body_roundtrip() {
         assert_eq!(
             resp.bytes().await.unwrap().to_vec(),
             payload,
-            "body 未原样回传（len={}）",
+            "body roundtrip mismatch (len={})",
             payload.len()
         );
     }

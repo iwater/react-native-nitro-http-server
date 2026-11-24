@@ -1,7 +1,4 @@
-//! QuickJS 集成测试
-//!
-//! 使用 QuickJS 作为 JavaScript 引擎来测试完整的请求-回调-响应数据流，
-//! 无需 React Native 即可测试 JavaScript 回调处理逻辑。
+//! QuickJS integration tests covering the request -> JS callback -> response flow.
 
 use crate::server::app_server::AppHttpServer;
 use crate::tests::test_utils::{get_free_port, wait_for_server};
@@ -18,7 +15,6 @@ use std::fs;
 use reqwest::{StatusCode, multipart};
 use serde_json::json;
 
-/// 从 HttpRequest 提取信息
 fn extract_request_info(request: *mut HttpRequest) -> Option<(String, String, String, String, String, i32)> {
     if request.is_null() {
         return None;
@@ -45,7 +41,6 @@ fn extract_request_info(request: *mut HttpRequest) -> Option<(String, String, St
     Some((request_id, method, path, headers_json, body, body_len))
 }
 
-/// 发送响应 (从 JS 调用)
 fn send_response_from_js(request_id: &str, status_code: u16, headers: HashMap<String, String>, body: Vec<u8>) -> bool {
     if let Some(chan) = RESPONSE_CHANNELS.lock().unwrap().remove(request_id) {
         let resp = ResponseData {
@@ -59,14 +54,11 @@ fn send_response_from_js(request_id: &str, status_code: u16, headers: HashMap<St
     }
 }
 
-/// 创建 http.sendResponse 函数并设置到全局对象
 fn setup_http_module(ctx: &Ctx<'_>) {
     let global = ctx.globals();
     
-    // 创建 http 对象
     let http_obj = Object::new(ctx.clone()).expect("Failed to create http object");
     
-    // sendResponse 函数: (requestId: String, statusCode: i32, headers: Object, body: String)
     let send_fn = Function::new(
         ctx.clone(),
         |_ctx: Ctx<'_>, args: Rest<rquickjs::Value<'_>>| -> rquickjs::Result<bool> {
@@ -80,11 +72,9 @@ fn setup_http_module(ctx: &Ctx<'_>) {
             let headers_val = args[2].clone();
             let body_val = args[3].clone();
             
-            // 解析 headers
             let mut headers = HashMap::new();
             if headers_val.is_object() {
                 if let Some(obj) = headers_val.as_object() {
-                    // 遍历对象属性
                     for key_result in obj.keys::<String>() {
                         if let Ok(k) = key_result {
                             if let Ok(v) = obj.get::<_, String>(&k) {
@@ -95,8 +85,7 @@ fn setup_http_module(ctx: &Ctx<'_>) {
                 }
             }
             
-            // 获取 body
-            // 支持 String, ArrayBuffer, Array<number>
+            // Supports String, ArrayBuffer, and Array<number>.
             let body_bytes: Vec<u8> = if body_val.is_string() {
                 let s: String = body_val.get()?;
                 s.into_bytes()
@@ -104,14 +93,11 @@ fn setup_http_module(ctx: &Ctx<'_>) {
                 if let Some(array_buffer) = obj.as_array_buffer() {
                     array_buffer.as_bytes().unwrap().to_vec()
                 } else if let Some(array) = obj.as_array() {
-                    // Try array of numbers
                     let mut bytes = Vec::new();
                     for val in array.iter() {
                         let v: rquickjs::Value = val?;
                         if let Some(n) = v.as_int() {
                             bytes.push(n as u8);
-                        } else {
-                            // Fallback or error?
                         }
                     }
                     bytes
@@ -131,7 +117,6 @@ fn setup_http_module(ctx: &Ctx<'_>) {
     global.set("http", http_obj).expect("Failed to set http global");
 }
 
-/// 创建 console 对象
 fn setup_console(ctx: &Ctx<'_>) {
     let global = ctx.globals();
     
@@ -151,7 +136,6 @@ fn setup_console(ctx: &Ctx<'_>) {
     global.set("console", console_obj).expect("Failed to set console");
 }
 
-/// 在 QuickJS 中处理请求
 fn process_request_in_js(
     request_id: &str,
     method: &str,
@@ -165,11 +149,9 @@ fn process_request_in_js(
     let ctx = Context::full(&rt).expect("Failed to create QuickJS context");
     
     ctx.with(|ctx| {
-        // 设置 http 和 console 模块
         setup_http_module(&ctx);
         setup_console(&ctx);
         
-        // 执行用户脚本
         if let Err(e) = ctx.eval::<(), _>(js_code) {
             eprintln!("Failed to eval JS code: {:?}", e);
             let mut headers = HashMap::new();
@@ -178,7 +160,6 @@ fn process_request_in_js(
             return;
         }
         
-        // 调用 handleRequest
         let call_script = format!(
             r#"
             if (typeof handleRequest === 'function') {{
@@ -213,10 +194,9 @@ fn process_request_in_js(
 }
 
 // ============================================================================
-// 测试用例
+// Test cases
 // ============================================================================
 
-/// 测试基础的 JS 回调 - 返回 200 OK
 #[tokio::test]
 async fn test_quickjs_basic_callback() {
     let temp_dir_base = std::env::temp_dir().join("test_quickjs_basic");
@@ -226,7 +206,6 @@ async fn test_quickjs_basic_callback() {
     fs::create_dir_all(&temp_dir_base).unwrap();
     let _temp_dir = temp_dir_base.canonicalize().unwrap();
     
-    // 回调函数 - 使用 QuickJS 处理请求
     extern "C" fn basic_callback(request: *mut HttpRequest) {
         if let Some((request_id, method, path, headers_json, body, body_len)) = extract_request_info(request) {
             let js_code = r#"
@@ -262,7 +241,6 @@ async fn test_quickjs_basic_callback() {
     let base_url = format!("http://127.0.0.1:{}", free_port);
     let client = reqwest::Client::new();
     
-    // 测试 JS 回调
     let resp = client.get(format!("{}/api/test", base_url)).send().await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.text().await.unwrap();
@@ -272,7 +250,6 @@ async fn test_quickjs_basic_callback() {
     let _ = fs::remove_dir_all(&temp_dir_base);
 }
 
-/// 测试 JSON 响应
 #[tokio::test]
 async fn test_quickjs_json_response() {
     let temp_dir_base = std::env::temp_dir().join("test_quickjs_json");
@@ -337,7 +314,6 @@ async fn test_quickjs_json_response() {
     let _ = fs::remove_dir_all(&temp_dir_base);
 }
 
-/// 测试请求解析 - 验证 headers 和 body 正确传递
 #[tokio::test]
 async fn test_quickjs_request_parsing() {
     let temp_dir_base = std::env::temp_dir().join("test_quickjs_parsing");
@@ -390,7 +366,6 @@ async fn test_quickjs_request_parsing() {
     let base_url = format!("http://127.0.0.1:{}", free_port);
     let client = reqwest::Client::new();
     
-    // POST 请求带 body
     let resp = client.post(format!("{}/echo", base_url))
         .header("X-Custom-Header", "test-value")
         .body("Hello, World!")
@@ -411,7 +386,6 @@ async fn test_quickjs_request_parsing() {
     let _ = fs::remove_dir_all(&temp_dir_base);
 }
 
-/// 测试路由逻辑 - 在 JS 中实现简单路由
 #[tokio::test]
 async fn test_quickjs_routing() {
     let temp_dir_base = std::env::temp_dir().join("test_quickjs_routing");
@@ -476,20 +450,17 @@ async fn test_quickjs_routing() {
     let base_url = format!("http://127.0.0.1:{}", free_port);
     let client = reqwest::Client::new();
     
-    // 测试 /api/hello
     let resp1 = client.get(format!("{}/api/hello", base_url)).send().await.unwrap();
     assert_eq!(resp1.status(), StatusCode::OK);
     let json1: serde_json::Value = resp1.json().await.unwrap();
     assert_eq!(json1["message"], "Hello!");
     
-    // 测试 /api/info
     let resp2 = client.get(format!("{}/api/info", base_url)).send().await.unwrap();
     assert_eq!(resp2.status(), StatusCode::OK);
     let json2: serde_json::Value = resp2.json().await.unwrap();
     assert_eq!(json2["version"], "1.0.0");
     assert_eq!(json2["engine"], "QuickJS");
     
-    // 测试 POST /api/data
     let resp3 = client.post(format!("{}/api/data", base_url))
         .body("test data")
         .send()
@@ -500,7 +471,6 @@ async fn test_quickjs_routing() {
     assert_eq!(json3["created"], true);
     assert_eq!(json3["data"], "test data");
     
-    // 测试 404
     let resp4 = client.get(format!("{}/unknown", base_url)).send().await.unwrap();
     assert_eq!(resp4.status(), StatusCode::NOT_FOUND);
     let json4: serde_json::Value = resp4.json().await.unwrap();
@@ -510,7 +480,6 @@ async fn test_quickjs_routing() {
     let _ = fs::remove_dir_all(&temp_dir_base);
 }
 
-/// 测试 JS 异常处理
 #[tokio::test]
 async fn test_quickjs_error_handling() {
     let temp_dir_base = std::env::temp_dir().join("test_quickjs_error");
@@ -553,12 +522,10 @@ async fn test_quickjs_error_handling() {
     let base_url = format!("http://127.0.0.1:{}", free_port);
     let client = reqwest::Client::new();
     
-    // 正常请求
     let resp1 = client.get(format!("{}/ok", base_url)).send().await.unwrap();
     assert_eq!(resp1.status(), StatusCode::OK);
     assert_eq!(resp1.text().await.unwrap(), "OK");
     
-    // 触发错误的请求
     let resp2 = client.get(format!("{}/error", base_url)).send().await.unwrap();
     assert_eq!(resp2.status(), StatusCode::INTERNAL_SERVER_ERROR);
     
@@ -566,7 +533,6 @@ async fn test_quickjs_error_handling() {
     let _ = fs::remove_dir_all(&temp_dir_base);
 }
 
-/// 测试上传插件集成和二进制响应
 #[tokio::test]
 async fn test_quickjs_upload_plugins() {
     let temp_dir_base = std::env::temp_dir().join("test_quickjs_upload");
@@ -576,7 +542,6 @@ async fn test_quickjs_upload_plugins() {
     fs::create_dir_all(&temp_dir_base).unwrap();
     let temp_dir = temp_dir_base.canonicalize().unwrap();
     
-    // 准备一个测试文件用于二进制响应测试
     let binary_file_path = temp_dir.join("image.png");
     let binary_content = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]; // PNG Magic header
     fs::write(&binary_file_path, &binary_content).unwrap();
@@ -586,7 +551,6 @@ async fn test_quickjs_upload_plugins() {
             let js_code = r#"
                 function handleRequest(req) {
                     if (req.path.startsWith("/upload")) {
-                        // Upload Plugin: 检查 headers
                         var filePath = req.headers["x-uploaded-file-path"] || req.headers["X-Uploaded-File-Path"];
                         if (filePath) {
                             http.sendResponse(req.requestId, 200, {}, "Upload OK: " + filePath);
@@ -594,16 +558,8 @@ async fn test_quickjs_upload_plugins() {
                             http.sendResponse(req.requestId, 400, {}, "Missing upload header");
                         }
                     } else if (req.path.startsWith("/buffer-upload")) {
-                        // Buffer Upload Plugin: 检查 body
-                        // 注意：body 传入的是 string，对于二进制数据 rquickjs 可能会有编码问题
-                        // 我们在 extract_request_info 中用了 String::from_utf8_lossy
-                        // 这里的测试用例发送 text/plain 内容以避免复杂性，或者验证长度
                         http.sendResponse(req.requestId, 200, {}, req.body);
                     } else if (req.path === "/binary-response") {
-                         // 返回二进制数据
-                         // 构造一个包含 PNG magic header 的 ArrayBuffer (or Array)
-                         // rquickjs ArrayBuffer construct might be hard in pure eval without creation api?
-                         // Use array of numbers
                          var bytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
                          http.sendResponse(req.requestId, 200, { "Content-Type": "image/png" }, bytes);
                     } else {
@@ -612,8 +568,8 @@ async fn test_quickjs_upload_plugins() {
                 }
             "#;
             
-            // 注意：process_request_in_js 使用 String::from_utf8_lossy 处理请求 body
-            // 这对于 buffer upload 测试（如果发送纯文本）是 ok 的。
+            // process_request_in_js uses lossy UTF-8 string conversion, so the buffer-upload
+            // subtest sends plain text.
             process_request_in_js(&request_id, &method, &path, &headers_json, &body, body_len, js_code);
         }
         
@@ -690,7 +646,6 @@ async fn test_quickjs_upload_plugins() {
     let _ = fs::remove_dir_all(&temp_dir_base);
 }
 
-/// 测试 WebSocket 插件配置和升级请求识别
 #[tokio::test]
 async fn test_quickjs_websocket_plugin_config() {
     let temp_dir_base = std::env::temp_dir().join("test_quickjs_websocket");
@@ -703,7 +658,6 @@ async fn test_quickjs_websocket_plugin_config() {
         if let Some((request_id, method, path, headers_json, body, body_len)) = extract_request_info(request) {
             let js_code = r#"
                 function handleRequest(req) {
-                    // 普通 HTTP 请求处理
                     http.sendResponse(req.requestId, 200, 
                         { "Content-Type": "application/json" },
                         JSON.stringify({ 
@@ -721,7 +675,6 @@ async fn test_quickjs_websocket_plugin_config() {
         unsafe { crate::c_api::free_http_request(request); }
     }
     
-    // 配置 WebSocket 插件
     let config_json = json!({
         "verbose": true,
         "mounts": [
@@ -746,23 +699,19 @@ async fn test_quickjs_websocket_plugin_config() {
     let base_url = format!("http://127.0.0.1:{}", free_port);
     let client = reqwest::Client::new();
     
-    // 1. 测试普通 HTTP 请求正常工作
+    // 1. Plain HTTP request reaches callback.
     let resp = client.get(format!("{}/api/test", base_url)).send().await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(json["message"], "HTTP endpoint working");
     
-    // 2. 测试 WebSocket 升级请求 (不带正确的升级头应该失败或返回协议错误)
-    // 非 WebSocket 请求到 /ws 路径也应该交给回调处理
+    // 2. Non-upgrade request to /ws/* falls through to callback.
     let resp2 = client.get(format!("{}/ws/chat", base_url)).send().await.unwrap();
-    // 由于不是真正的 WebSocket 升级请求，应该由回调处理
     assert_eq!(resp2.status(), StatusCode::OK);
     let json2: serde_json::Value = resp2.json().await.unwrap();
     assert_eq!(json2["path"], "/ws/chat");
     
-    // 3. 测试带 WebSocket 升级头的请求
-    // 发送一个带 Upgrade: websocket 头的请求
-    // 注意：reqwest 不支持真正的 WebSocket，这里只是验证服务器能识别升级请求头
+    // 3. Upgrade request is intercepted by the WebSocket plugin rather than the HTTP callback.
     let resp3 = client.get(format!("{}/ws", base_url))
         .header("Upgrade", "websocket")
         .header("Connection", "Upgrade")
@@ -772,15 +721,8 @@ async fn test_quickjs_websocket_plugin_config() {
         .await
         .unwrap();
     
-    // WebSocket 插件应该尝试处理升级请求
-    // reqwest 无法完成真正的 WebSocket 握手，所以可能返回错误状态
-    // 但重要的是服务器识别了升级请求 (返回 101 或其他非回调处理的响应)
-    // 由于 reqwest 不支持 WebSocket，连接可能会断开或超时
-    // 我们检查状态码不是 200（表示不是普通回调处理的）
     let status = resp3.status();
     println!("WebSocket upgrade response status: {}", status);
-    // 101 表示切换协议成功，其他错误状态也可能发生
-    // 只要不是 200 说明 WebSocket 插件拦截了请求
     assert!(status == StatusCode::SWITCHING_PROTOCOLS || status != StatusCode::OK || status.is_client_error(), 
             "Expected WebSocket plugin to handle upgrade request, got: {}", status);
     
@@ -788,7 +730,6 @@ async fn test_quickjs_websocket_plugin_config() {
     let _ = fs::remove_dir_all(&temp_dir_base);
 }
 
-/// 测试 WebSocket 路径匹配逻辑
 #[tokio::test]
 async fn test_quickjs_websocket_path_matching() {
     let temp_dir_base = std::env::temp_dir().join("test_quickjs_ws_path");
@@ -817,7 +758,6 @@ async fn test_quickjs_websocket_path_matching() {
         unsafe { crate::c_api::free_http_request(request); }
     }
     
-    // 配置多个 WebSocket 端点
     let config_json = json!({
         "verbose": true,
         "mounts": [
@@ -841,20 +781,17 @@ async fn test_quickjs_websocket_path_matching() {
     let base_url = format!("http://127.0.0.1:{}", free_port);
     let client = reqwest::Client::new();
     
-    // 测试非 WebSocket 路径由回调处理
     let resp1 = client.get(format!("{}/api/hello", base_url)).send().await.unwrap();
     assert_eq!(resp1.status(), StatusCode::OK);
     let json1: serde_json::Value = resp1.json().await.unwrap();
     assert_eq!(json1["handled_by"], "callback");
     assert_eq!(json1["path"], "/api/hello");
     
-    // 测试不带升级头的 /ws 请求由回调处理（因为不是升级请求）
     let resp2 = client.get(format!("{}/ws", base_url)).send().await.unwrap();
     assert_eq!(resp2.status(), StatusCode::OK);
     let json2: serde_json::Value = resp2.json().await.unwrap();
     assert_eq!(json2["handled_by"], "callback");
     
-    // 测试带升级头的 /chat 请求被 WebSocket 插件识别
     let resp3 = client.get(format!("{}/chat", base_url))
         .header("Upgrade", "websocket")
         .header("Connection", "Upgrade")
@@ -864,11 +801,9 @@ async fn test_quickjs_websocket_path_matching() {
         .await
         .unwrap();
     
-    // WebSocket 插件应该拦截这个请求
     let status = resp3.status();
     println!("/chat upgrade status: {}", status);
     
-    // 测试带升级头的 /notifications 请求
     let resp4 = client.get(format!("{}/notifications", base_url))
         .header("Upgrade", "websocket")
         .header("Connection", "Upgrade")
@@ -885,7 +820,6 @@ async fn test_quickjs_websocket_path_matching() {
     let _ = fs::remove_dir_all(&temp_dir_base);
 }
 
-/// 使用 tungstenite 进行真正的 WebSocket 连接测试（含消息验证）
 #[tokio::test]
 async fn test_quickjs_websocket_real_connection() {
     use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -914,7 +848,6 @@ async fn test_quickjs_websocket_real_connection() {
         unsafe { crate::c_api::free_http_request(request); }
     }
     
-    // 配置 WebSocket 插件
     let config_json = json!({
         "verbose": true,
         "mounts": [
@@ -935,7 +868,6 @@ async fn test_quickjs_websocket_real_connection() {
     
     wait_for_server(port_copy).await;
     
-    // 使用 tokio-tungstenite 建立真正的 WebSocket 连接
     let ws_url = format!("ws://127.0.0.1:{}/ws", port_copy);
     println!("Connecting to WebSocket at {}", ws_url);
     
@@ -949,20 +881,16 @@ async fn test_quickjs_websocket_real_connection() {
             println!("WebSocket connected! Response: {:?}", response);
             assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
             
-            // 验证 1: 连接成功建立
             println!("Test 1: Connection established - PASS");
             
-            // 验证 2: 可以发送消息（不会报错）
             let send_result = ws_stream.send(Message::Text("Hello WebSocket!".to_string())).await;
             assert!(send_result.is_ok(), "Failed to send text message");
             println!("Test 2: Send text message - PASS");
             
-            // 验证 3: 可以发送 Ping 并收到 Pong
             let ping_result = ws_stream.send(Message::Ping(vec![1, 2, 3, 4])).await;
             assert!(ping_result.is_ok(), "Failed to send ping");
             println!("Test 3: Send ping - PASS");
             
-            // 验证 4: 等待并检查是否收到 Pong
             let pong_result = tokio::time::timeout(
                 Duration::from_secs(2),
                 async {
@@ -991,7 +919,6 @@ async fn test_quickjs_websocket_real_connection() {
                 Err(_) => println!("Test 4: Receive pong - timed out (expected: server may not auto-pong)"),
             }
             
-            // 验证 5: 可以正常关闭连接
             let close_result = ws_stream.close(None).await;
             assert!(close_result.is_ok(), "Failed to close connection");
             println!("Test 5: Close connection - PASS");
@@ -1000,7 +927,6 @@ async fn test_quickjs_websocket_real_connection() {
         }
         Ok(Err(e)) => {
             println!("WebSocket connection failed: {:?}", e);
-            // 连接失败也记录，但不一定是致命错误
         }
         Err(_) => {
             println!("WebSocket connection timed out");
@@ -1011,7 +937,6 @@ async fn test_quickjs_websocket_real_connection() {
     let _ = fs::remove_dir_all(&temp_dir_base);
 }
 
-/// 测试 WebSocket 二进制消息发送能力
 #[tokio::test]
 async fn test_quickjs_websocket_binary_message() {
     use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -1057,23 +982,19 @@ async fn test_quickjs_websocket_binary_message() {
         Duration::from_secs(5),
         connect_async(&ws_url)
     ).await {
-        // 验证 1: 连接成功
         assert_eq!(response.status(), http::StatusCode::SWITCHING_PROTOCOLS);
         println!("Test 1: Connection established - PASS");
         
-        // 验证 2: 可以发送二进制数据
         let binary_data: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]; // PNG header
         let send_result = ws_stream.send(Message::Binary(binary_data.clone())).await;
         assert!(send_result.is_ok(), "Failed to send binary message");
         println!("Test 2: Send binary message ({} bytes) - PASS", binary_data.len());
         
-        // 验证 3: 可以发送大量二进制数据
         let large_data: Vec<u8> = (0..1024).map(|i| (i % 256) as u8).collect();
         let large_send_result = ws_stream.send(Message::Binary(large_data.clone())).await;
         assert!(large_send_result.is_ok(), "Failed to send large binary message");
         println!("Test 3: Send large binary message ({} bytes) - PASS", large_data.len());
         
-        // 验证 4: 正常关闭
         let close_result = ws_stream.close(None).await;
         assert!(close_result.is_ok(), "Failed to close connection");
         println!("Test 4: Close connection - PASS");

@@ -1,4 +1,3 @@
-// src/lib.rs
 pub mod types;
 pub mod logger;
 pub mod global;

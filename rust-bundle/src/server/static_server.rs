@@ -30,10 +30,9 @@ impl StaticHttpServer {
         let port = self.port;
         let root_dir = self.root_dir.clone();
 
-        // 解析 host 字符串为 IP 地址
         let addr = crate::utils::resolve_bind_addr(&host, port);
 
-        // 先创建 Runtime，因为 AddrIncoming::bind 需要在 Tokio Runtime 上下文中运行
+        // Build runtime before binding because AddrIncoming::bind requires an active Tokio reactor.
         let rt = match Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
@@ -42,10 +41,8 @@ impl StaticHttpServer {
             }
         };
 
-        // 进入 Runtime 上下文，确保 AddrIncoming::bind 可以找到 reactor
         let _guard = rt.enter();
 
-        // 使用 try_bind 风格的 AddrIncoming::bind 避免 panic
         let incoming = match hyper::server::conn::AddrIncoming::bind(&addr) {
             Ok(inc) => inc,
             Err(e) => {
@@ -57,9 +54,7 @@ impl StaticHttpServer {
         let actual_port = incoming.local_addr().port();
         self.port = actual_port;
 
-        // 插件**只构造一次**（mount="/"）：构造时会把 root 目录 canonicalize 一次，
-        // 而 Task 13 的整条优化就是为了消掉「每请求一次 canonicalize」——
-        // 放在请求路径里构造会把它加回来。
+        // Construct the plugin once at startup so the canonicalized root_dir is cached across requests.
         let plugin = Arc::new(crate::plugins::static_file::StaticFilePlugin::new(
             "/".to_string(),
             root_dir,
@@ -100,7 +95,6 @@ impl StaticHttpServer {
     }
 }
 
-// 处理静态文件请求
 async fn handle_static_request(
     req: Request<Body>,
     plugin: Arc<crate::plugins::static_file::StaticFilePlugin>,
@@ -118,21 +112,12 @@ async fn handle_static_request(
     Ok(resp)
 }
 
-/// 静态服务本体：**全部委托给 `StaticFilePlugin`**（mount = `/`）。
-///
-/// 为什么不再手写第二套路径处理：委托前这里是另一份实现，与 app server 的
-/// static mount 行为不一致，实测有三处差异（都已写成回归用例）：
-/// 1. 目录请求 404 —— index 回退被写在「`canonicalize()` 失败」的分支里，
-///    而目录**能** canonicalize 成功，于是去 `read(目录)` → EISDIR → 404；
-/// 2. `/.hidden` 照常 200 服务出去（不挡隐藏文件）；
-/// 3. 不做 percent-decode —— 含空格的文件名 404。
-///
-/// 委托后这些行为与插件（以及 app server 的 static mount）自动一致。
+/// Delegate static file serving to `StaticFilePlugin` (mount = `/`) so index
+/// fallback, hidden-file blocking, and percent-decoding match `AppHttpServer`.
 async fn handle_static_request_inner(
     req: Request<Body>,
     plugin: Arc<crate::plugins::static_file::StaticFilePlugin>,
 ) -> Result<Response<Body>, hyper::Error> {
-    // getStats 的 totalRequests
     crate::global::TOTAL_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     use crate::plugins::Plugin;
@@ -140,15 +125,9 @@ async fn handle_static_request_inner(
     if plugin.should_handle(&req) {
         match plugin.handle_request(req).await {
             Ok(crate::plugins::PluginAction::Handled(resp)) => return Ok(resp),
-            Ok(crate::plugins::PluginAction::PassThrough(_)) => {
-                // StaticFilePlugin 目前**不会**返回 PassThrough（已核实源码里没有该分支）；
-                // 真出现了也没有别的 handler 可以交，按 404 处理。
-            }
+            Ok(crate::plugins::PluginAction::PassThrough(_)) => {}
             Err(e) => {
-                // 与 `PluginManager` 的约定保持一致：插件报错 → 500 `Plugin error: {e}`
-                // （app server 走的就是这条）。**不能**沿用旧的「一律 404」——
-                // 那会把「文件在 canonicalize 与 open 之间消失」「权限不足」这类
-                // 真实 IO 错误伪装成「文件不存在」。
+                // Return 500 on plugin I/O errors rather than masking them as 404.
                 crate::global::ERROR_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return Ok(Response::builder()
                     .status(StatusCode::INTERNAL_SERVER_ERROR)

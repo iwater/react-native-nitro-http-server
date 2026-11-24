@@ -29,9 +29,8 @@ async-trait = "0.1.89"
 anyhow = "1.0.100"
 dav-server = { version = "0.5", default-features = false, features = ["hyper", "localfs"] }
 async_zip = { version = "0.0.18", features = ["tokio", "deflate"] }
-# `io` feature 提供 tokio_util::io::ReaderStream（static_file 的流式响应体）。
-# 注意：async_zip 的 "tokio" feature 可能已经把它带上来了，但那是**传递**依赖 ——
-# 显式声明才不会在别人改 async_zip 时静默断掉。
+# The `io` feature provides tokio_util::io::ReaderStream (for static_file streaming).
+# Declared explicitly so it does not break if async_zip drops the transitive feature.
 tokio-util = { version = "0.7.17", features = ["io"] }
 mime_guess = "2.0.5"
 chrono = "0.4"
@@ -49,13 +48,13 @@ tokio-tungstenite = "0.20"
 futures-util = "0.3"
 http = "0.2"
 
-# 使用已知兼容的 bindgen 版本
+# Use a stable older bindgen version
 [build-dependencies]
-bindgen = "0.66.1"  # 使用老一些但稳定的版本
+bindgen = "0.66.1"
 
 [profile.release]
-opt-level = "z"     # 优化代码尺寸
-lto = true          # 启用链接时优化
-codegen-units = 1   # 降低代码生成单元数以提高优化效果
-panic = "abort"     # panic 时直接终止，不进行栈展开
-strip = true        # 自动剥离符号表 (这就是类似 strip 命令的功能)
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

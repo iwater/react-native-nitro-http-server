@@ -1,4 +1,4 @@
-// src/cors.rs - 全局 CORS 支持
+// Global CORS support
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
 use hyper::{Body, Request, Response, StatusCode};
@@ -6,11 +6,11 @@ use hyper::header::HeaderValue;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CorsConfig {
-    pub origin: String,            // 默认 "*"
-    pub methods: Vec<String>,      // 默认常见方法 + WebDAV 方法
-    pub headers: Vec<String>,      // 默认 ["*"]
-    pub credentials: bool,         // 默认 false
-    pub max_age: Option<u32>,      // 默认 None
+    pub origin: String,            // Default: "*"
+    pub methods: Vec<String>,      // Default: common HTTP + WebDAV methods
+    pub headers: Vec<String>,      // Default: ["*"]
+    pub credentials: bool,         // Default: false
+    pub max_age: Option<u32>,      // Default: None
 }
 
 impl Default for CorsConfig {
@@ -19,7 +19,7 @@ impl Default for CorsConfig {
             origin: "*".to_string(),
             methods: [
                 "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS",
-                // WebDAV 方法
+                // WebDAV methods
                 "PROPFIND", "PROPPATCH", "MKCOL", "COPY", "MOVE", "LOCK", "UNLOCK",
             ].iter().map(|s| s.to_string()).collect(),
             headers: vec!["*".to_string()],
@@ -29,10 +29,10 @@ impl Default for CorsConfig {
     }
 }
 
-// 全局 CORS 配置，None 表示未启用
+/// Global CORS configuration; `None` disables CORS.
 pub static CORS_CONFIG: Lazy<Mutex<Option<CorsConfig>>> = Lazy::new(|| Mutex::new(None));
 
-/// 解析 CORS 配置 JSON："true" → 默认配置；对象 → 字段填充缺省值；其他 → None（关闭）
+/// Parse CORS config JSON: `"true"` -> defaults, object -> customized defaults, anything else -> `None`.
 pub fn cors_config_from_json(json: &str) -> Option<CorsConfig> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
     match &value {
@@ -64,7 +64,7 @@ pub fn cors_config_from_json(json: &str) -> Option<CorsConfig> {
     }
 }
 
-/// 设置全局 CORS 配置（None / 解析失败 → 关闭）
+/// Set global CORS configuration (`None` or invalid JSON disables CORS).
 pub fn set_cors_config_json(json: Option<&str>) {
     let parsed = json.and_then(cors_config_from_json);
     let mut guard = CORS_CONFIG.lock().unwrap();
@@ -75,30 +75,28 @@ pub fn set_cors_config_json(json: Option<&str>) {
     }
 }
 
-/// 提取请求的 Origin 头
 fn request_origin(req: &Request<Body>) -> Option<String> {
     req.headers().get(hyper::header::ORIGIN)
         .and_then(|v| v.to_str().ok())
         .map(String::from)
 }
 
-/// 判断是否为 CORS preflight 请求
-/// WebDAV 协议自身的 OPTIONS 不带 Access-Control-Request-Method，不会被误判
+/// Return true for CORS preflight requests (WebDAV OPTIONS lacks Access-Control-Request-Method).
 pub fn is_preflight(req: &Request<Body>) -> bool {
     req.method() == hyper::Method::OPTIONS
         && req.headers().contains_key(hyper::header::ORIGIN)
         && req.headers().contains_key("access-control-request-method")
 }
 
-/// 如果是 preflight 且 CORS 已启用，返回 204 应答；否则返回 None
+/// Return a 204 preflight response if this is a preflight request and CORS is enabled.
 pub fn preflight_response(req: &Request<Body>) -> Option<Response<Body>> {
     if !is_preflight(req) {
         return None;
     }
     let cfg = CORS_CONFIG.lock().unwrap().clone()?;
 
-    // 回显请求的 Access-Control-Request-Headers（旧 WebView 不接受 "*"）；
-    // 请求未带时回退为配置的 headers
+    // Echo requested Access-Control-Request-Headers (older WebViews reject "*");
+    // fall back to configured headers if absent.
     let allow_headers = req.headers().get("access-control-request-headers")
         .and_then(|v| v.to_str().ok())
         .map(String::from)
@@ -127,7 +125,7 @@ pub fn preflight_response(req: &Request<Body>) -> Option<Response<Body>> {
     builder.body(Body::empty()).ok()
 }
 
-/// 在响应出口处注入 CORS 头。已存在 access-control-allow-origin 时不覆盖（JS 逃生口）。
+/// Inject CORS headers onto the response unless `access-control-allow-origin` is already set.
 pub fn apply_cors(resp: &mut Response<Body>, request_origin: Option<&str>) {
     let cfg = match CORS_CONFIG.lock().unwrap().clone() {
         Some(c) => c,
@@ -139,7 +137,7 @@ pub fn apply_cors(resp: &mut Response<Body>, request_origin: Option<&str>) {
     let allow_origin = if cfg.credentials {
         match request_origin {
             Some(o) => o.to_string(),
-            None => return, // credentials 模式下无 Origin 不加头
+            None => return, // Skip CORS headers in credentials mode without an Origin header
         }
     } else {
         cfg.origin.clone()

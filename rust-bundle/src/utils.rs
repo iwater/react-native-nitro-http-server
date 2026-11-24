@@ -8,55 +8,41 @@ use hyper::header::{HeaderName, HeaderValue};
 
 use crate::global::CUSTOM_MIME_TYPES;
 
-/// 把请求体拷成一份交给 C 侧的内存，返回 `(ptr, len)`。
+/// Copy a request body slice for C ownership, returning `(ptr, len)`.
 ///
-/// 契约：`free_http_request` 用 `Vec::from_raw_parts(ptr, len, len)` 回收，也就是
-/// **假定 capacity == len**。所以这里必须用 `into_boxed_slice().into_vec()` 把多余
-/// capacity 挤掉——依赖 `to_vec()` / `with_capacity` 恰好不多分配是 UB，那只是分配器
-/// 的当前行为而不是契约（实测本机各尺寸下 to_vec 确实 cap==len，但换个分配器就可能不是）。
-///
-/// 空 body 返回 null 指针，与 `free_http_request` 里 `body_len > 0` 的判断对应。
+/// `free_http_request` reclaims memory via `Vec::from_raw_parts(ptr, len, len)`,
+/// which requires `capacity == len`, so excess capacity is stripped via `normalize_capacity`.
+/// Returns a null pointer for empty bodies (matching `body_len > 0` in `free_http_request`).
 pub fn alloc_request_body(body: &[u8]) -> (*mut c_char, usize) {
     if body.is_empty() {
         return (std::ptr::null_mut(), 0);
     }
     let mut v = normalize_capacity(body.to_vec());
     let ptr = v.as_mut_ptr() as *mut c_char;
-    std::mem::forget(v); // 交给 C 侧，由 free_http_request 回收
+    std::mem::forget(v); // Transferred to C; freed by free_http_request
     (ptr, body.len())
 }
 
-/// 把 Vec 的 capacity 压到等于 len。
-///
-/// 单独拆出来是因为：`Vec::from_raw_parts(ptr, len, len)` 会把 capacity **声明**成 len，
-/// 所以从重建后的 Vec 上永远看不到真实 capacity —— 这个契约只能在 forget 之前测。
+/// Shrink a Vec's capacity to match its length.
+/// Kept as a separate helper so unit tests can verify `capacity == len` before `mem::forget`.
 pub(crate) fn normalize_capacity(v: Vec<u8>) -> Vec<u8> {
     v.into_boxed_slice().into_vec()
 }
 
-/// 读取请求体，带**硬上限**。
+/// Read a request body with a hard byte limit.
 ///
-/// 为什么不能用 `hyper::body::to_bytes`：hyper 0.14 的它**没有内建上限**
-/// （`hyper-0.14.32/src/body/to_bytes.rs` 把 chunk 一路拼进一个 buffer），
-/// 一个超大 body 就能把进程内存撑爆。
-///
-/// 两道闸，缺一不可：
-/// 1. `content-length` 预检 —— 能提前拒绝，连 body 都不用读；
-/// 2. **流式累积检查** —— 真正的兜底。客户端可以不给 content-length（chunked），
-///    也可以谎报一个小的值，所以只有边读边数才靠得住。
-///
-/// 返回 `Err(Response)` 的语义是「直接用这个响应回掉请求」：超限 413，读取出错 400。
+/// Uses both a `Content-Length` pre-check and a streaming byte counter because
+/// hyper 0.14's `to_bytes` is unbounded and chunked/dishonest requests may omit
+/// or underreport `Content-Length`. Returns 413 on overflow or 400 on read error.
 pub async fn read_body_limited(body: Body, max: u64) -> Result<Vec<u8>, Response<Body>> {
     use hyper::body::HttpBody;
 
-    // 闸 1：content-length 预检
     if let Some(len) = body.size_hint().exact() {
         if len > max {
             return Err(payload_too_large());
         }
     }
 
-    // 闸 2：边读边数
     let mut body = body;
     let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = body.data().await {
@@ -81,13 +67,8 @@ fn payload_too_large() -> Response<Body> {
         .unwrap()
 }
 
-/// 安全构建 HTTP 响应：非法 status 回退 500，非法 header 跳过并告警，**绝不 panic**。
-///
-/// 背景：`Response::builder()` 的每一步都只是把错误记进 builder，真正 `.body()` 时才返回
-/// Err。原先调用点直接 `.unwrap()`，JS 传入非法 statusCode（如 99）就会 panic，
-/// hyper 丢连接 → 客户端收到 IncompleteMessage。
-/// 至于 header：http 0.2 的 HeaderValue 允许 obs-text（0x80-0xFF，即非 ASCII），
-/// 但**拒绝控制字符**（\0 \r \n）以及非法 header name，所以校验仍然必要。
+/// Build an HTTP response without panicking: invalid status codes fall back to 500
+/// and invalid header names/values (e.g. control chars) are dropped with a warning.
 pub fn build_response(
     status_code: u16,
     headers: HashMap<String, String>,
@@ -111,8 +92,7 @@ pub fn build_response(
     }
 
     builder.body(Body::from(body)).unwrap_or_else(|_| {
-        // 走到这里只可能是 status/header 之外的构建错误（理论上不可达）；
-        // 兜底返回一个一定能构建成功的 500。
+        // Fallback 500 in case builder construction fails for any unexpected reason.
         Response::builder()
             .status(StatusCode::INTERNAL_SERVER_ERROR)
             .body(Body::from("Internal Server Error"))
@@ -120,19 +100,16 @@ pub fn build_response(
     })
 }
 
-// 根据文件扩展名获取 Content-Type
 pub fn get_content_type(path: &Path) -> String {
     if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
         let ext_lower = ext.to_lowercase();
         
-        // 优先查找自定义 MIME types
         if let Ok(custom_types) = CUSTOM_MIME_TYPES.lock() {
             if let Some(mime_type) = custom_types.get(&ext_lower) {
                 return mime_type.clone();
             }
         }
         
-        // 回退到内置 MIME types
         match ext_lower.as_str() {
             "html" | "htm" => return "text/html; charset=utf-8".to_string(),
             "css" => return "text/css; charset=utf-8".to_string(),
@@ -170,17 +147,8 @@ pub fn get_content_type(path: &Path) -> String {
     "application/octet-stream".to_string()
 }
 
-/// 把 host 字符串解析成**绑定地址**。
-///
-/// **只有解析失败（含空串）才回落 127.0.0.1 —— 合法地址一律原样返回。**
-///
-/// 为什么单独抽出来并有专门的用例：GitHub issue #7 报过
-/// 「所有 server 类型都不支持 `host: '0.0.0.0'`」。当时的核实结论是**环境问题**
-/// （Windows Subsystem for Android 的共享网络），不是代码问题 —— 但那时**本地没有
-/// 任何测试**覆盖这条路径，结论只能靠读代码得出。
-/// 抽出来 + 钉住之后，以后谁加「0.0.0.0 → 127.0.0.1」这种"优化"，测试会立刻红。
-///
-/// 三条服务路径（callback / app / static）都调它，顺带消掉了三份重复实现。
+/// Parse `host` into a bind `SocketAddr`, falling back to `127.0.0.1` only when parsing fails.
+/// Valid addresses (including `0.0.0.0`) are preserved as-is.
 pub fn resolve_bind_addr(host: &str, port: u16) -> std::net::SocketAddr {
     match host.parse::<std::net::IpAddr>() {
         Ok(ip) => (ip, port).into(),

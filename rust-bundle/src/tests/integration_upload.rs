@@ -84,13 +84,7 @@ async fn test_upload_plugin_integration() {
     fs::remove_dir_all(&temp_dir_base).unwrap();
 }
 
-/// Task 6 的下游验证：非 ASCII 文件名走**完整链路**
-/// （plugin → 收集 header → C 边界 → 回调）后，JS 侧仍能拿到可读的文件名。
-///
-/// 为什么非要在这一层再测一遍：plugin 层用例断言的是「设进去的值能 `to_str()`」，
-/// 而这里断言的是 **JS 实际收到的那份 `headers_json`**。
-/// 修复前这里看到的是 `"x-uploaded-original-name": ""`（空串）——
-/// 那正是原始 bug 的用户可见症状，也是这条用例的失败形态。
+/// End-to-end check that non-ASCII filenames reach the JS callback intact via header encoding.
 #[tokio::test]
 async fn test_upload_non_ascii_filename_reaches_js_readable() {
     let temp_dir_base = std::env::temp_dir().join("test_upload_non_ascii_e2e");
@@ -137,7 +131,7 @@ async fn test_upload_non_ascii_filename_reaches_js_readable() {
     let base_url = format!("http://127.0.0.1:{}", free_port);
     let client = reqwest::Client::new();
 
-    // ---- 1) upload 插件：非 ASCII 文件名 ----
+    // 1) Upload plugin with non-ASCII filename
     let form = multipart::Form::new().part(
         "file",
         multipart::Part::bytes(b"File Content".to_vec()).file_name("报告.pdf"),
@@ -150,42 +144,41 @@ async fn test_upload_non_ascii_filename_reaches_js_readable() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // 回调把 JS 侧看到的 headers 原样回显，这里解析它 —— 判据与 JS 完全一致
+    // Callback echoes the exact headers JSON seen by JS.
     let body = resp.text().await.unwrap();
     let headers: std::collections::HashMap<String, String> =
-        serde_json::from_str(&body).expect("回调应回显 headers JSON");
+        serde_json::from_str(&body).expect("callback should echo headers JSON");
 
     let name = headers
         .get("x-uploaded-original-name")
-        .expect("JS 侧必须能看到 x-uploaded-original-name");
+        .expect("JS must receive x-uploaded-original-name");
     assert_ne!(
         name, "",
-        "非 ASCII 文件名被静默置空 —— 这正是 Task 6 要修的 bug"
+        "non-ASCII filename must not become an empty string"
     );
     assert_eq!(name, "%E6%8A%A5%E5%91%8A.pdf");
     assert_eq!(
         headers.get("x-uploaded-filename-encoding").map(|s| s.as_str()),
         Some("percent"),
-        "JS 侧需要标记头才知道要 decode"
+        "encoding header must be set so JS knows to decode"
     );
     assert_eq!(
         urlencoding::decode(name).unwrap().into_owned(),
         "报告.pdf",
-        "percent 解码后应还原原始文件名"
+        "percent decoding must recover original filename"
     );
 
-    // 路径头也必须是可读的（非 ASCII 扩展名会破坏它，见 plugin_upload.rs 的对应用例）
     let path = headers
         .get("x-uploaded-file-path")
-        .expect("JS 侧必须能看到 x-uploaded-file-path");
-    assert_ne!(path, "", "路径头被静默置空");
+        .expect("JS must receive x-uploaded-file-path");
+    assert_ne!(path, "", "file path header must not be empty");
     assert!(
         std::path::Path::new(path).exists(),
-        "路径头指向的文件应真实存在: {}",
+        "uploaded file must exist at path: {}",
         path
     );
 
-    // ---- 2) buffer_upload 插件：非 ASCII 文件名 ----
+    // 2) BufferUpload plugin with non-ASCII filename
     let form_buffer = multipart::Form::new().part(
         "file",
         multipart::Part::bytes(b"Buffer Content".to_vec()).file_name("报告.bin"),
@@ -200,12 +193,12 @@ async fn test_upload_non_ascii_filename_reaches_js_readable() {
 
     let body_buffer = resp_buffer.text().await.unwrap();
     let headers_buffer: std::collections::HashMap<String, String> =
-        serde_json::from_str(&body_buffer).expect("回调应回显 headers JSON");
+        serde_json::from_str(&body_buffer).expect("callback should echo headers JSON");
 
     let name_buffer = headers_buffer
         .get("x-upload-filename")
-        .expect("JS 侧必须能看到 x-upload-filename");
-    assert_ne!(name_buffer, "", "buffer_upload 的文件名被静默置空");
+        .expect("JS must receive x-upload-filename");
+    assert_ne!(name_buffer, "", "buffer_upload filename must not be empty");
     assert_eq!(name_buffer.as_str(), urlencoding::encode("报告.bin").to_string());
     assert_eq!(
         headers_buffer
@@ -214,7 +207,7 @@ async fn test_upload_non_ascii_filename_reaches_js_readable() {
         Some("percent")
     );
 
-    // ---- 3) 纯 ASCII 必须原样、且不带标记头（向后兼容）----
+    // 3) Plain ASCII filename remains unencoded without an encoding header.
     let form_ascii = multipart::Form::new().part(
         "file",
         multipart::Part::bytes(b"ASCII Content".to_vec()).file_name("plain.txt"),
@@ -227,15 +220,15 @@ async fn test_upload_non_ascii_filename_reaches_js_readable() {
         .unwrap();
     let body_ascii = resp_ascii.text().await.unwrap();
     let headers_ascii: std::collections::HashMap<String, String> =
-        serde_json::from_str(&body_ascii).expect("回调应回显 headers JSON");
+        serde_json::from_str(&body_ascii).expect("callback should echo headers JSON");
     assert_eq!(
         headers_ascii.get("x-uploaded-original-name").map(|s| s.as_str()),
         Some("plain.txt"),
-        "纯 ASCII 文件名必须原样传递"
+        "plain ASCII filename must pass through unchanged"
     );
     assert!(
         headers_ascii.get("x-uploaded-filename-encoding").is_none(),
-        "纯 ASCII 时不应出现 encoding 标记头"
+        "encoding header should not be added for plain ASCII"
     );
 
     server_task.abort();

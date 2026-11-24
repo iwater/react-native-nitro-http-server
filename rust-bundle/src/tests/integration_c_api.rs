@@ -200,8 +200,7 @@ fn test_get_server_stats_integration() {
     assert!(stats_str.contains("status"));
     assert!(stats_str.contains("running"));
 
-    // Task 16 起 get_server_stats 返回**堆分配**字符串（配 free_string）；
-    // 改之前是静态字面量、不能释放。这里按新契约释放，同时也是契约的回归守卫。
+    // `get_server_stats` returns a heap-allocated string that must be freed via `free_string`.
     unsafe { crate::c_api::free_string(stats_ptr as *mut std::os::raw::c_char) };
 }
 
@@ -490,7 +489,7 @@ fn test_c_api_upload_plugins() {
     std::thread::sleep(Duration::from_millis(100));
 }
  
-/// 测试 C API 边缘情况 (Null/Empty 指针)
+/// Edge cases for null/empty host arguments in C API functions.
 #[test]
 fn test_c_api_edge_cases() {
     let base_port = get_free_port() as std::os::raw::c_int;
@@ -573,16 +572,8 @@ fn test_c_api_edge_cases() {
     stop_app_server();
     sleep_ms(100);
 }
-/*
-// Disabled due to runtime crash in test environment (signal 6)
-// Likely due to FFI panic boundary or threading issues in test harness
-#[test]
-fn test_c_api_response_edge_cases() {
-    // ...
-}
-*/
 
-// ==================== WebSocket C API 测试 ====================
+// ==================== WebSocket C API Tests ====================
 
 use crate::c_api::{
     set_websocket_callback, ws_send_text, ws_send_binary, ws_close,
@@ -591,7 +582,6 @@ use crate::c_api::{
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
 
-/// 用于收集 WebSocket 事件的静态变量
 static WS_TEST_EVENT_COUNT: AtomicU32 = AtomicU32::new(0);
 static WS_TEST_LAST_EVENT_TYPE: AtomicU32 = AtomicU32::new(0);
 
@@ -612,8 +602,7 @@ extern "C" fn ws_test_callback(event: *const CWebSocketEvent) {
     println!("[WS Test] Event: type={}, conn_id={}", evt.event_type, conn_id);
 }
 
-/// 测试 WebSocket C API 函数 (无服务器)
-/// 这些测试验证边缘情况和 null 处理
+/// Edge-case and null handling tests for WebSocket C API functions (no server).
 #[test]
 fn test_websocket_c_api_null_handling() {
     // 1. ws_send_text with null connection_id
@@ -650,8 +639,7 @@ fn test_websocket_c_api_null_handling() {
     assert!(!result, "ws_close without plugin should return false");
 }
 
-/// 测试 WebSocket 与服务器集成
-/// 注：此测试与 test_websocket_c_api_send_message 功能重叠，在并行测试时可能冲突
+/// WebSocket server integration test (overlaps with `test_websocket_c_api_send_message`).
 #[test]
 #[ignore]
 fn test_websocket_c_api_with_server() {
@@ -738,7 +726,7 @@ fn test_websocket_c_api_with_server() {
     std::thread::sleep(Duration::from_millis(100));
 }
 
-/// 测试 WebSocket 发送消息 API
+/// Test WebSocket send/close C API functions against a running server.
 #[test]
 fn test_websocket_c_api_send_message() {
     use tokio_tungstenite::connect_async;

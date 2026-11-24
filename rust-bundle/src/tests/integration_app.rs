@@ -61,14 +61,8 @@ async fn test_app_server_basic_rewrite() {
     fs::remove_dir_all(&temp_dir_base).unwrap();
 }
 
-/// Task 13 端到端：真实 socket 上验证 percent-decode 与 HEAD 的**线上分帧**。
-///
-/// 为什么插件级用例不够：插件返回 `Response<Body>` 只说明「头写对了」，
-/// 而线上到底是 `Content-Length` 还是 `Transfer-Encoding: chunked`、
-/// HEAD 到底有没有 body —— 这些由 **hyper 的 encoder** 决定
-/// （`proto/h1/role.rs`：有显式 content-length 时用 `Encoder::length`；
-/// HEAD 走 `can_have_body == false` 强制 `Encoder::length(0)`）。
-/// 只有真 socket 能证明这两条。
+/// End-to-end verification of percent-decoding, Content-Length framing, and HEAD
+/// behavior on a real socket.
 #[tokio::test]
 async fn test_app_server_static_percent_decode_and_head_on_wire() {
     let base = std::env::temp_dir().join(format!("t13_e2e_{}", uuid::Uuid::new_v4()));
@@ -93,31 +87,31 @@ async fn test_app_server_static_percent_decode_and_head_on_wire() {
     let base_url = format!("http://127.0.0.1:{}", port);
     let client = reqwest::Client::new();
 
-    // 1. GET：percent 编码路径命中带空格的文件名，且**不是 chunked**
+    // 1. GET with percent-encoded spaces must stream with explicit Content-Length (not chunked).
     let resp = client
         .get(format!("{}/s/hello%20world.txt", base_url))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "percent 编码路径应命中 hello world.txt");
+    assert_eq!(resp.status(), StatusCode::OK, "percent-encoded path should match hello world.txt");
     assert_eq!(
         resp.headers().get("content-length").map(|v| v.to_str().unwrap()),
         Some("10"),
-        "流式响应必须显式带 Content-Length"
+        "streamed response must include explicit Content-Length"
     );
     assert!(
         resp.headers().get("transfer-encoding").is_none(),
-        "不该退化成 chunked（线上格式与改动前保持一致）"
+        "must not fall back to chunked encoding"
     );
     assert_eq!(resp.text().await.unwrap(), "0123456789");
 
-    // 2. HEAD：同样的头，但**没有 body**
+    // 2. HEAD must be handled by the static plugin and return headers without a body.
     let resp = client
         .head(format!("{}/s/hello%20world.txt", base_url))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "HEAD 必须由静态插件接管（否则会落到 callback 的 404）");
+    assert_eq!(resp.status(), StatusCode::OK, "HEAD must be handled by static plugin");
     assert_eq!(
         resp.headers().get("content-length").map(|v| v.to_str().unwrap()),
         Some("10")
@@ -126,9 +120,9 @@ async fn test_app_server_static_percent_decode_and_head_on_wire() {
         resp.headers().get("content-type").map(|v| v.to_str().unwrap()),
         Some("text/plain; charset=utf-8")
     );
-    assert_eq!(resp.bytes().await.unwrap().len(), 0, "HEAD 不能带 body");
+    assert_eq!(resp.bytes().await.unwrap().len(), 0, "HEAD must not return a body");
 
-    // 3. 防回归：普通 GET 仍然正常
+    // 3. Plain GET regression check.
     fs::write(root.join("plain.txt"), "plain").unwrap();
     let resp = client.get(format!("{}/s/plain.txt", base_url)).send().await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);

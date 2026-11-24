@@ -6,10 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::any::Any;
 
-// 从 lib.rs 中访问公共 API
 use crate::utils::get_content_type;
 
-// 目录列表配置
 #[derive(Debug, Clone)]
 pub struct DirListConfig {
     pub enabled: bool,
@@ -25,7 +23,6 @@ impl Default for DirListConfig {
     }
 }
 
-// 目录条目信息
 struct DirEntry {
     name: String,
     is_dir: bool,
@@ -34,15 +31,12 @@ struct DirEntry {
     icon: &'static str,
 }
 
-// 静态文件服务插件配置
 #[derive(Debug, Clone)]
 struct StaticFileConfig {
     enabled: bool,
     mount_path: String,
     root_dir: PathBuf,
-    /// `root_dir.canonicalize()` 的缓存（每请求一次 canonicalize 是纯浪费）。
-    ///
-    /// ⚠️ **只在成功时缓存**，见 [`StaticFilePlugin::canonical_root_cached`]。
+    /// Cached `root_dir.canonicalize()` result (only cached on success).
     canonical_root: Option<PathBuf>,
     dir_list: DirListConfig,
     default_index: Vec<String>,
@@ -72,23 +66,15 @@ impl StaticFilePlugin {
         let mut config = StaticFileConfig::default();
         config.mount_path = mount_path;
         config.root_dir = root_dir;
-        // 构造时就把 canonical root 算出来（生产路径上 root 此时一定已存在：
-        // app_server 的 static mount 分支会先检查 exists/is_dir）
         Self::canonical_root_cached(&mut config);
         Self {
             config: Arc::new(Mutex::new(config)),
         }
     }
 
-    /// 取 `root_dir` 的 canonical 形式（必要时重算）。
-    ///
-    /// 为什么**不把失败也缓存成 `None`**：`canonicalize()` 对不存在的目录会失败，
-    /// 而 root 目录有可能是服务器启动**之后**才创建的（例如 App 首次运行才建文档目录）。
-    /// 若把失败缓存住，那条路径会**永久静默失效** —— 改之前每请求重算时它是能自愈的。
-    /// 所以：成功才写回，`None` 时下次再试。
-    ///
-    /// 注意是关联函数（不接 `&self`）：调用点通常已经持有 `self.config` 的锁，
-    /// 再 `lock()` 一次会**死锁**（std 的 Mutex 不可重入）。
+    /// Return cached canonicalized `root_dir`, retrying if it has not succeeded yet
+    /// (so directories created after server startup can still resolve).
+    /// Associated function because callers already hold the `self.config` mutex.
     fn canonical_root_cached(cfg: &mut StaticFileConfig) -> Option<PathBuf> {
         if cfg.canonical_root.is_none() {
             cfg.canonical_root = cfg.root_dir.canonicalize().ok();
@@ -96,11 +82,7 @@ impl StaticFilePlugin {
         cfg.canonical_root.clone()
     }
 
-    /// 构造文件响应：GET 走**流式**（不再整文件读进内存），HEAD 只回头。
-    ///
-    /// 显式带 `Content-Length`：流式 body 的 size hint 不是精确值，hyper 会退化成
-    /// `Transfer-Encoding: chunked`；显式给出长度后 hyper 用 `Encoder::length`，
-    /// 线上格式与改动前一致（客户端不感知），HEAD 也才有意义。
+    /// Stream the file body on GET or return headers only on HEAD, with explicit Content-Length.
     async fn file_response(path: &Path, is_head: bool) -> Result<Response<Body>, anyhow::Error> {
         let metadata = tokio::fs::metadata(path).await?;
         let content_type = get_content_type(path);
@@ -129,15 +111,10 @@ impl Plugin for StaticFilePlugin {
     fn on_load(&self, config: &Value) -> Result<(), anyhow::Error> {
         let mut cfg = self.config.lock().unwrap();
         
-        // 解析其他配置
         if let Some(enabled) = config.get("enabled").and_then(|v| v.as_bool()) {
             cfg.enabled = enabled;
         }
         
-        // mount_path 和 root_dir 通常在构造时传入，但也可以覆盖 (如果 mounts配置对象包含这些)
-        // 在新架构下，AppHttpServer 负责提取 path 和 root，所以这里主要是 dir_list 等
-        
-        // 解析目录列表配置
         if let Some(dir_list) = config.get("dir_list") {
             cfg.dir_list.enabled = dir_list.get("enabled")
                 .and_then(|v| v.as_bool())
@@ -147,7 +124,6 @@ impl Plugin for StaticFilePlugin {
                 .unwrap_or(false);
         }
         
-        // 解析默认索引文件
         if let Some(index_files) = config.get("default_index").and_then(|v| v.as_array()) {
             cfg.default_index.clear();
             for file in index_files {
@@ -157,10 +133,9 @@ impl Plugin for StaticFilePlugin {
             }
         }
         
-        // 解析自定义响应头
         cfg.custom_headers = super::parse_custom_headers(config);
 
-        // root_dir 可能是在 new() 之后才创建的 —— 这里再算一次（成功才写回）
+        // Retry canonicalization in case root_dir was created after new().
         Self::canonical_root_cached(&mut cfg);
 
         crate::log_info!("Static file plugin loaded: mount={}, root={:?}, enabled={}", 
@@ -171,32 +146,24 @@ impl Plugin for StaticFilePlugin {
     fn should_handle(&self, req: &Request<Body>) -> bool {
         let mut config = self.config.lock().unwrap();
 
-        // 只处理 GET 与 HEAD。
-        // HEAD 必须接管 —— 否则 HEAD /s/a.txt 会落到用户 callback，拿不到文件的
-        // Content-Type / Content-Length（客户端做条件请求或探测文件时全靠它）。
+        // Handle GET and HEAD (HEAD must be handled here so Content-Type/Content-Length match GET).
         if req.method() != hyper::Method::GET && req.method() != hyper::Method::HEAD {
             return false;
         }
         
-        // 必须启用
         if !config.enabled {
             return false;
         }
         
         let path = req.uri().path();
         
-        // 检查 mount 点（带路径段边界：挂 /static 不接管 /staticfoo/...）
         if !super::path_matches_mount(path, &config.mount_path) {
             return false;
         }
         
-        // 解析文件路径（percent-decode 必须在这里就做 —— 下面要做存在性检查，
-        // 用未解码的 "hello%20world.txt" 去找文件必然 canonicalize 失败 → 返回 false，
-        // 请求根本走不到 handle_inner）
         let sanitized_path = super::resolve_relative(&config.mount_path, path);
         let file_path = config.root_dir.join(&sanitized_path);
         
-        // 检验文件是否存在且在 root_dir 内（canonical_root 走缓存，不再每请求一次系统调用）
         if let Some(canonical_root) = Self::canonical_root_cached(&mut config) {
             if let Ok(canonical_file) = file_path.canonicalize() {
                 if canonical_file.starts_with(&canonical_root) {
@@ -204,9 +171,7 @@ impl Plugin for StaticFilePlugin {
                 }
             }
             
-            // 特殊情况：如果是根路径 "/" (或 mount_path 本身)，且 sanitized_path 为空，
-            // 且 root_dir 存在，则由 handle_request 进一步决定（如检查 index.html）
-            // 这里仅仅为了性能，可以简单判断 root 是否存在
+            // Let handle_request decide on index / directory listing for the mount root.
             if sanitized_path.is_empty() {
                 return true;
             }
@@ -237,17 +202,14 @@ impl StaticFilePlugin {
         let path = req.uri().path().to_string();
         let is_head = req.method() == hyper::Method::HEAD;
 
-        // 剥离 mount_path 并 percent-decode（与 should_handle 同一套逻辑，见 resolve_relative）
         let sanitized_path = super::resolve_relative(&config.mount_path, &path);
         let file_path = config.root_dir.join(&sanitized_path);
 
         let canonical_root = Self::canonical_root_cached(&mut config)
             .ok_or_else(|| anyhow::anyhow!("static root 不可用: {:?}", config.root_dir))?;
 
-        // 尝试规范化文件路径
         if let Ok(canonical_file) = file_path.canonicalize() {
-            // 确保在根目录内
-            // ⚠️ 这是 decode 之后唯一的边界：`%2e%2e` 会解成 `..`，只有这一步能挡住它
+            // Guard against path traversal after percent-decoding (e.g. %2e%2e -> ..).
             if !canonical_file.starts_with(&canonical_root) {
                 return Ok(super::PluginAction::Handled(Response::builder()
                     .status(StatusCode::FORBIDDEN)
@@ -255,7 +217,7 @@ impl StaticFilePlugin {
                     .unwrap()));
             }
 
-            // 隐藏文件/隐藏目录检查：任意相对路径段以 '.' 开头且未开启 show_hidden 时一律拒绝
+            // Block dotfiles and dot-directories unless show_hidden is enabled.
             if !config.dir_list.show_hidden {
                 if let Ok(rel) = canonical_file.strip_prefix(&canonical_root) {
                     let has_hidden_component = rel.components().any(|c| {
@@ -271,12 +233,10 @@ impl StaticFilePlugin {
             }
 
             if canonical_file.is_file() {
-                // 直接返回文件（GET 流式 / HEAD 只回头）
                 return Ok(super::PluginAction::Handled(
                     Self::file_response(&canonical_file, is_head).await?
                 ));
             } else if canonical_file.is_dir() {
-                // 这是一个目录，尝试查找索引文件
                 for index_name in &config.default_index {
                     let index_path = canonical_file.join(index_name);
                     if index_path.is_file() {
@@ -286,16 +246,13 @@ impl StaticFilePlugin {
                     }
                 }
 
-                // 没有索引文件，检查是否启用目录列表
                 if config.dir_list.enabled {
                     let resp = self.generate_directory_listing(&path, &canonical_file, &config.dir_list).await?;
                     return Ok(super::PluginAction::Handled(resp));
                 }
             }
         } else {
-            // 文件不存在，可能是请求根目录 (例如 mount_path/ -> stripped is "", or mount_path -> stripped is "")
             if sanitized_path.is_empty() {
-                // 检查根目录下的索引文件
                 for index_name in &config.default_index {
                     let index_path = canonical_root.join(index_name);
                     if index_path.is_file() {
@@ -305,9 +262,7 @@ impl StaticFilePlugin {
                     }
                 }
 
-                // 没有索引文件，检查是否启用目录列表
                 if config.dir_list.enabled {
-                    // 对于根目录列表，使用请求路径作为显示路径
                     let display_path = if path.ends_with('/') { path.clone() } else { format!("{}/", path) };
                     let resp = self.generate_directory_listing(&display_path, &canonical_root, &config.dir_list).await?;
                     return Ok(super::PluginAction::Handled(resp));
@@ -333,7 +288,6 @@ impl StaticFilePlugin {
         while let Some(entry) = entries.next_entry().await? {
             let entry_name = entry.file_name().to_string_lossy().to_string();
             
-            // 检查是否隐藏文件
             if !dir_config.show_hidden && entry_name.starts_with('.') {
                 continue;
             }
@@ -374,7 +328,6 @@ impl StaticFilePlugin {
     }
 }
 
-// 根据文件扩展名获取图标
 fn get_file_icon(path: &Path, is_dir: bool) -> &'static str {
     if is_dir {
         return "📁";
@@ -382,28 +335,20 @@ fn get_file_icon(path: &Path, is_dir: bool) -> &'static str {
     
     if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
         match ext.to_lowercase().as_str() {
-            // 图片
             "jpg" | "jpeg" | "png" | "gif" | "webp" | "svg" | "ico" | "bmp" => "🖼️",
-            // 视频
             "mp4" | "webm" | "avi" | "mov" | "mkv" | "ogv" | "flv" => "🎬",
-            // 音频
             "mp3" | "wav" | "ogg" | "m4a" | "flac" | "aac" => "🎵",
-            // 文档
             "pdf" => "📕",
             "doc" | "docx" => "📘",
             "xls" | "xlsx" => "📗",
             "ppt" | "pptx" => "📙",
-            // 代码
             "html" | "htm" => "🌐",
             "css" => "🎨",
             "js" | "ts" | "jsx" | "tsx" => "📜",
             "json" => "📋",
             "rs" | "go" | "py" | "rb" | "java" | "c" | "cpp" | "h" | "hpp" => "💻",
-            // 压缩
             "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" => "📦",
-            // 文本
             "txt" | "md" | "log" => "📝",
-            // 配置
             "yaml" | "yml" | "toml" | "ini" | "cfg" | "conf" => "⚙️",
             _ => "📄"
         }
@@ -412,7 +357,6 @@ fn get_file_icon(path: &Path, is_dir: bool) -> &'static str {
     }
 }
 
-// 格式化文件大小
 fn format_file_size(size: u64) -> String {
     if size < 1024 {
         format!("{} B", size)
@@ -444,11 +388,10 @@ fn encode_uri_component(s: &str) -> String {
     urlencoding::encode(s).into_owned()
 }
 
-// 生成目录列表 HTML
 fn generate_directory_listing_html(request_path: &str, entries: Vec<DirEntry>) -> String {
     let mut html = String::new();
 
-    // 规范化路径段（先 decode 再统一编码 href，避免二次编码，同时防止 XSS）
+    // Decode then re-encode path segments to prevent double-encoding and XSS.
     let raw_parts: Vec<&str> = request_path.split('/').filter(|s| !s.is_empty()).collect();
     let decoded_parts: Vec<String> = raw_parts
         .iter()
@@ -459,7 +402,6 @@ fn generate_directory_listing_html(request_path: &str, entries: Vec<DirEntry>) -
         })
         .collect();
 
-    // 面包屑导航
     let mut breadcrumb = String::from(r#"<a href="/">🏠 Root</a>"#);
     let mut accumulated_href = String::new();
     for part in &decoded_parts {
@@ -479,16 +421,13 @@ fn generate_directory_listing_html(request_path: &str, entries: Vec<DirEntry>) -
         format!("/{}/", encoded.join("/"))
     };
     
-    // 分离目录和文件，目录在前
     let mut dirs: Vec<&DirEntry> = entries.iter().filter(|e| e.is_dir).collect();
     let mut files: Vec<&DirEntry> = entries.iter().filter(|e| !e.is_dir).collect();
     dirs.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     files.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     
-    // 生成表格行
     let mut rows = String::new();
     
-    // 添加返回上级目录
     if !decoded_parts.is_empty() {
         let parent_path = if decoded_parts.len() == 1 {
             "/".to_string()
@@ -508,7 +447,6 @@ fn generate_directory_listing_html(request_path: &str, entries: Vec<DirEntry>) -
             </tr>"#, escape_html(&parent_path)));
     }
     
-    // 目录
     for entry in dirs {
         let href = format!("{}{}/", base_href, encode_uri_component(&entry.name));
         rows.push_str(&format!(r#"
@@ -520,7 +458,6 @@ fn generate_directory_listing_html(request_path: &str, entries: Vec<DirEntry>) -
             </tr>"#, entry.icon, escape_html(&href), escape_html(&entry.name), escape_html(&entry.modified)));
     }
     
-    // 文件
     for entry in files {
         let href = format!("{}{}", base_href, encode_uri_component(&entry.name));
         rows.push_str(&format!(r#"

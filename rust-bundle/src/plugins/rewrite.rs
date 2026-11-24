@@ -8,18 +8,16 @@ use std::sync::RwLock;
 
 use super::{Plugin, PluginAction};
 
-/// 单条重写规则
 #[derive(Debug)]
 struct RewriteRule {
-    /// 匹配模式（正则表达式）
     pattern: Regex,
-    /// 替换目标（支持捕获组引用，如 $1, $2）
+    /// Replacement string (supports capture groups such as $1, $2).
     replacement: String,
 }
 
-/// URL 重写插件
-/// 
-/// 配置示例:
+/// URL rewrite plugin.
+///
+/// Example configuration:
 /// ```json
 /// {
 ///   "type": "rewrite",
@@ -99,7 +97,7 @@ impl Plugin for RewritePlugin {
             for rule in rules.iter() {
                 if rule.pattern.is_match(&path) {
                     path = rule.pattern.replace(&path, rule.replacement.as_str()).to_string();
-                    break; // 只应用第一个匹配的规则
+                    break; // Apply only the first matching rule.
                 }
             }
             path

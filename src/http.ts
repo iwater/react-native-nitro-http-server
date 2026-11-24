@@ -1,4 +1,3 @@
-// src/http.ts
 // Node.js Compatible HTTP Interface for React Native
 
 import { EventEmitter } from 'eventemitter3';
@@ -112,16 +111,16 @@ export class IncomingMessage extends EventEmitter {
     complete: boolean = false;
 
     /**
-     * 客户端在响应发出前断开连接（Node: `IncomingMessage#aborted`，v17 起已废弃但仍
-     * 是广泛使用的判据）。
+     * True if the client disconnected before the response was sent (mirrors Node's
+     * deprecated `IncomingMessage#aborted`, still widely used).
      *
-     * ⚠️ 与 `complete` **不是**互补关系：`complete` 只表示「请求体读完了」，
-     * 客户端断开时它同样可能已经是 true（完整请求已收到、handler 还在跑）——
-     * 所以**不能**拿 `complete` 当「没被中断」的代理。
+     * Not complementary to `complete`: `complete` only means the request body
+     * finished reading and may already be `true` when the client disconnects
+     * while the handler is still running.
      */
     aborted: boolean = false;
 
-    /** 底层连接已销毁（Node: `req.destroyed`） */
+    /** Whether the underlying connection has been destroyed (Node: `req.destroyed`). */
     destroyed: boolean = false;
 
     // Internal
@@ -228,8 +227,6 @@ export class IncomingMessage extends EventEmitter {
                 }
 
                 this.emit('data', Buffer.from(chunk, 'utf-8'));
-                // Small delay to yield to other tasks?
-                // await new Promise(r => setTimeout(r, 0)); 
             }
         } catch (err) {
             if (!this.aborted && !this.destroyed && this.readable && !this._responseEnded) {
@@ -251,16 +248,13 @@ export class IncomingMessage extends EventEmitter {
     }
 
     /**
-     * 收到原生「客户端断开」通知时调用（只由 `requestAbort.ts` 的中枢调）。
+     * Called when the native layer reports a client disconnect (invoked by `requestAbort.ts`).
      *
-     * 事件顺序**对齐 Node 22 实测**（`req:aborted` → `req:error:ECONNRESET` →
-     * `req:close`；`res:close` 由 `ServerResponse._handleAborted` 发）。
+     * Event order matches Node 22 (`aborted` -> `error` (ECONNRESET) -> `close`;
+     * `res` emits `close` via `ServerResponse._handleAborted`).
      *
-     * ⚠️ `'error'` 只在**已经有监听器**时才发 —— 这是 Node 自己的做法
-     * （实测：同一场景挂 `req.on('error')` 会收到 ECONNRESET，不挂就完全不发），
-     * 照抄是为了对齐 Node 的可观测行为。
-     * ⚠️ 注意**不是**为了防崩：本模块的 `EventEmitter` 是 `eventemitter3`，
-     * 它对未处理的 `'error'` **不抛**（实测），与 Node 的 `EventEmitter` 不同。
+     * `'error'` is emitted only when listeners are attached, matching Node's observable
+     * behavior (note: `eventemitter3` does not throw on unhandled `'error'` events).
      */
     _handleAborted(): void {
         if (this.aborted) return;
@@ -270,7 +264,7 @@ export class IncomingMessage extends EventEmitter {
         this.emit('aborted');
         if (this.listenerCount('error') > 0) {
             const err = new Error('aborted') as Error & { code?: string };
-            // 与 Node 的 connResetException('aborted') 一致
+            // Matches Node's connResetException('aborted').
             err.code = 'ECONNRESET';
             this.emit('error', err);
         }
@@ -317,10 +311,9 @@ export class ServerResponse extends EventEmitter {
     writableFinished: boolean = false;
 
     /**
-     * 响应通道已失效（Node: `res.destroyed`）。
+     * Whether the response channel has been destroyed (Node: `res.destroyed`).
      *
-     * 客户端断开时置 true —— 注意 Node 此时**不**动 `writableEnded`
-     * （实测断开后 `res.writableEnded === false`），所以两者不要混用。
+     * Set to `true` on client disconnect without changing `writableEnded`, matching Node.
      */
     destroyed: boolean = false;
 
@@ -455,7 +448,7 @@ export class ServerResponse extends EventEmitter {
         // Mark headers as sent conceptually (though we send them at the end internally)
         this.headersSent = true;
 
-        // 排进串行链（不要 fire-and-forget：并发写会乱序）
+        // Enqueue into the write chain to preserve chunk ordering.
         this._enqueueNativeWrite(
             () => this._nativeServer.writeResponseChunk(this._requestId, strChunk),
             cb
@@ -464,29 +457,24 @@ export class ServerResponse extends EventEmitter {
         return true;
     }
 
-    // Flag to track ended state
     private _ended: boolean = false;
 
     /**
-     * 串行化原生写入，保证 chunk 顺序。
+     * Serializes native writes to preserve chunk ordering.
      *
-     * 为什么必须串行：`writeResponseChunk` / `endResponse` / `sendBinaryResponse`
-     * 都是 Nitro `Promise::async`，在**线程池上并发执行**。fire-and-forget 地连发
-     * 多次 write，到达 Rust 累积器的顺序不确定 → 响应体乱序。
-     *
-     * 另外还有一条更隐蔽的后果：`writeResponseChunk` 会
-     * `accumulators.entry(request_id).or_insert_with(new)` —— 如果某个 chunk 在
-     * `end_response` / `send_response` 之后才落地，而 `cleanup_request_state`
-     * 已经跑过了，它就会**重新创建**一条没人清理的累积器条目（永久泄漏）。
-     * 串行化同时封死了这条路径。
+     * `writeResponseChunk`, `endResponse`, and `sendBinaryResponse` are Nitro
+     * `Promise::async` calls executed concurrently on a thread pool. Fire-and-forget
+     * calls could reach the Rust chunk accumulator out of order, or let a late
+     * `writeResponseChunk` arrive after `cleanup_request_state` and recreate a leaked
+     * accumulator entry.
      */
     private _writeChain: Promise<unknown> = Promise.resolve();
 
     /**
-     * 把一次原生写入排进串行链。
+     * Enqueue a native write onto the serial chain.
      *
-     * 失败不打断链：`.catch` 之后返回的是 resolved promise，后续写入照常按序执行 ——
-     * 一次 write 失败不应该让整个响应卡死（与 Node 的语义一致）。
+     * A failed write emits `'error'` and resolves the chain link so subsequent writes
+     * still execute in order rather than stalling the response (matching Node).
      */
     private _enqueueNativeWrite<T>(op: () => Promise<T>, onDone?: () => void): void {
         this._writeChain = this._writeChain
@@ -548,20 +536,8 @@ export class ServerResponse extends EventEmitter {
 
             const headersJson = JSON.stringify(headers);
 
-            // 也排进串行链。若不走链，`sendBinaryResponse` 会抢在挂起的 write 之前 ——
-            // 而迟到的 `writeResponseChunk` 会在 cleanup 之后重建累积器条目（永久泄漏）。
-            //
-            // ✅ **已修**（2026-09-24）：`send_response` 现在会先把累积器里的块并进来。
-            //
-            // 修复前的缺陷：`sendBinaryResponse` 最终走 `send_response`，只读**显式 body**、
-            // 不读累积器，于是 `res.write('a'); res.end(arrayBuffer)` 里那个 'a' 被
-            // **静默丢弃**（响应体只剩 arrayBuffer）—— 串行化只保证了顺序，没把两者拼起来。
-            //
-            // 修法（`rust_c_lib/src/c_api.rs::send_response`）：先 `remove` 该请求的
-            // `CHUNK_ACCUMULATORS` 条目，把它的字节**前置**到显式 body 上。
-            // 顺序与 node 一致（实测 node v22.22.2：
-            // `write('a'); end(Buffer.from([0x62,0x63]))` → body `616263`）。
-            // 非流式路径累积器恒为空 ⇒ 合并是无副作用的 no-op。
+            // Enqueue in the write chain so pending writes finish before sendBinaryResponse
+            // cleans up state; native send_response prepends any accumulated chunks.
             this._enqueueNativeWrite(
                 () => this._nativeServer.sendBinaryResponse(
                     this._requestId, this.statusCode, headersJson, buffer as ArrayBuffer
@@ -591,15 +567,14 @@ export class ServerResponse extends EventEmitter {
 
         // Write final chunk if provided (String legacy path)
         if (chunk !== undefined) {
-            // 不能直接调 write()（它会 fire-and-forget 且不与 endResponse 排序），
-            // 所以自己排进同一条链：chunk 先落地，再 endResponse。
+            // Enqueue directly on the write chain so the final chunk lands before endResponse.
             let strChunk = Buffer.isBuffer(chunk) ? chunk.toString(encoding) : String(chunk);
             this._enqueueNativeWrite(
                 () => this._nativeServer.writeResponseChunk(this._requestId, strChunk),
                 () => this._finalizeResponse(cb)
             );
         } else {
-            // 即使没有 chunk，endResponse 也必须排在所有挂起的 write 之后
+            // Even without a final chunk, endResponse must wait for all pending writes.
             this._enqueueNativeWrite(
                 () => Promise.resolve(),
                 () => this._finalizeResponse(cb)
@@ -666,12 +641,10 @@ export class ServerResponse extends EventEmitter {
     }
 
     /**
-     * 收到原生「客户端断开」通知时调用（只由 `requestAbort.ts` 的中枢调）。
+     * Called when the native layer reports a client disconnect (invoked by `requestAbort.ts`).
      *
-     * ⚠️ 刻意**不**改 `writableEnded` / `_finished`：Node 在断开后这两个仍是原值
-     * （实测 `res.writableEnded === false`、`res.finished === false`）。
-     * `res.end()` 之后再写的语义也保持原样（Node 实测：断开后 `write`/`end`
-     * 都**不抛**，静默丢弃）。
+     * Intentionally leaves `writableEnded` and `finished` unchanged, and keeps
+     * post-disconnect `write`/`end` silent, matching Node's behavior.
      */
     _handleAborted(): void {
         if (this.destroyed) return;
@@ -691,10 +664,9 @@ export class ServerResponse extends EventEmitter {
  */
 export class Server extends EventEmitter {
     /**
-     * Node 的 handle-ref：running 的 server 顶住事件循环。
-     * 原生 `start()` 是**真异步**的（await 之后才 emit 'listening'），宿主看不见
-     * 这个在途操作 —— 没有这个 ref 的话 loop 会先收泵，'listening' 与回调永远
-     * 不投递（实测：进程静默 exit 0，并打 "Dispatcher has already been destroyed"）。
+     * Keeps the event loop alive while the server is running or starting.
+     * Native `start()` is asynchronous (`'listening'` emits only after it resolves),
+     * so without a ref a headless JS loop would exit before `'listening'` fires.
      */
     private _loopRef = new LoopRef('http-server.Server');
 
@@ -771,15 +743,11 @@ export class Server extends EventEmitter {
             this._host = hostname;
         }
 
-        // Start the native server with our request handler
-        // running 的 server 顶住 loop（Node 的 handle ref）—— 必须在调原生 start
-        // **之前**登记：它是异步的，否则 loop 会在 'listening' 之前收泵。
+        // Acquire loop ref before the async native start so the loop stays alive until 'listening'.
         this._loopRef.acquire();
-        // 装「客户端断开」处理器（幂等）。原生侧是全局单回调，装一次即可；
-        // auto-restart 路径不需要重装（Rust 的注册表是进程级静态）。
+        // Install the global client-disconnect handler (idempotent; safe across auto-restarts).
         installRequestAbortedHandler(this._nativeServer);
-        // 等上一次原生 stop 落定再起：原生 server 是单例，停还没停完就起会撞车
-        // —— 新 server 会报出端口但请求完全拿不到响应（见 nativeStopQueue.ts）。
+        // Wait for any in-flight native stop before starting (singleton native server; see nativeStopQueue.ts).
         awaitPendingNativeStop()
             .then(() => this._nativeServer.start(port, this._handleNativeRequest.bind(this), hostname))
             .then((actualPort) => {
@@ -794,7 +762,7 @@ export class Server extends EventEmitter {
                     this.emit('listening');
                     if (cb) cb();
                 } else {
-                    // start 失败 = 没有 handle，不该留下 ref（漏一次泄漏一个）
+                    // Release the loop ref if start failed.
                     this._loopRef.release();
                     const err = new Error(`Failed to start server on port ${port}`);
                     this.emit('error', err);
@@ -823,13 +791,12 @@ export class Server extends EventEmitter {
         }
 
         const stopping = this._nativeServer.stop();
-        // 登记给后续 start 等待（原生 server 是单例，跨实例也要守）
+        // Track the native stop so subsequent start calls wait for teardown.
         trackNativeStop(stopping);
         stopping
             .then(() => {
-                // handle 销毁即 unref，且在 emit('close') **之前**（'close' 回调里
-                // 可能再建 server，顺序反了会短暂误判为「还有活 handle」）。
-                // stop() 失败时不释放：server 可能还活着。
+                // Release the loop ref before emitting 'close' (listeners may start a new
+                // server or check active handles). Keep the ref held if stop() fails.
                 this._loopRef.release();
                 this.listening = false;
                 this.emit('close');
@@ -847,9 +814,9 @@ export class Server extends EventEmitter {
      * after iOS background suspension or Android process recovery.
      */
     private async _probeAlive(): Promise<boolean> {
-        // 每个实例独立探测自己的端口，多实例互不干扰。
-        // 500ms 超时 + 失败 100ms 后重试一次：该请求会经过用户 handler，而回前台那一刻
-        // JS 线程往往正忙 —— 20ms 会把**健康**服务器判死并重启它（重启窗口内连接全断）。
+        // Probe this instance's own port independently.
+        // Use a 500ms timeout and retry once after 100ms: the JS thread may be busy when
+        // returning to the foreground, and too short a timeout would falsely restart a healthy server.
         const probe = async (): Promise<boolean> => {
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), 500);
@@ -862,8 +829,7 @@ export class Server extends EventEmitter {
             } catch {
                 return false;
             } finally {
-                // 必须清：失败路径（连接被拒时 fetch 立即 reject）不清就会留下悬挂的
-                // 500ms 定时器 —— 每次探测一个，重试一次就是两个。
+                // Clear the timer so immediate connection-refused rejections do not leave dangling timers.
                 clearTimeout(timeout);
             }
         };
@@ -883,8 +849,7 @@ export class Server extends EventEmitter {
             if (!alive) {
                 console.log('[http.Server] Detected server is dead, auto-restarting...');
                 this.listening = false;
-                // 这条路径绕过 close()：原生 stop 成功就得把 ref 放掉，
-                // 重启成功再重新 acquire（LoopRef 是单 token 槽，幂等）。
+                // Bypasses close(), so release the loop ref if native stop succeeds before re-acquiring.
                 try { await stopWithTracking(this._nativeServer.stop()); this._loopRef.release(); } catch (_) { /* ignore */ }
 
                 try {
@@ -937,15 +902,14 @@ export class Server extends EventEmitter {
             // Pass the native server instance for streaming data access
             const req = new IncomingMessage(request, this._nativeServer);
             const res = new ServerResponse(request.requestId, this._nativeServer, (response) => {
-                // handler 落定 → 摘掉中断登记（正常路径不会再有中断通知）
+                // Untrack once the response is resolved.
                 req._markResponseEnded();
                 untrackRequest(request.requestId);
                 resolve(response);
             });
 
-            // 登记中断状态，并把原生通知路由到这一对 req/res 上。
-            // 时序：必须在 emit('request') **之前**装好 —— 用户的 requestListener
-            // 一进来就可能 await，期间客户端断开就得能收到。
+            // Register abort tracking before emitting 'request' so disconnects during any
+            // async work in the listener are caught immediately.
             const abortEntry = trackRequest(request.requestId);
             abortEntry.listeners.add(() => {
                 req._handleAborted();
@@ -994,14 +958,14 @@ export class Server extends EventEmitter {
     }
 
     /**
-     * ⚠️ 当前**不生效**，只做 Node 兼容占位。
+     * Compatibility placeholder only (currently has no effect).
      *
-     * 真要改「等 JS handler 返回响应的最长等待时间」，请用 config server 的
-     * `request_timeout_secs`（单位秒，默认 30）：
+     * To configure the JS handler response timeout, use `request_timeout_secs`
+     * (in seconds, default 30) on `createConfigServer`:
      *
      *   createConfigServer(port, handler, { request_timeout_secs: 600 })
      *
-     * `createServer()` 走的是 plain server 路径，不接受 config，所以在这里设多少都没用。
+     * `createServer()` uses the plain server path and does not accept config.
      */
     get requestTimeout(): number {
         return this._options.requestTimeout || 300000;

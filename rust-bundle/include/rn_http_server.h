@@ -10,189 +10,154 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
-// 请求数据结构
 typedef struct HttpRequest {
-    char* request_id;      // 请求ID
-    char* method;          // HTTP方法 (GET, POST等)
-    char* path;            // 请求路径
-    char* headers_json;    // 请求头的JSON字符串
-    char* body;            // 请求体数据
-    int body_len;          // 请求体长度
+    char* request_id;
+    char* method;
+    char* path;
+    char* headers_json;
+    char* body;
+    int body_len;
 } HttpRequest;
 
-// 请求回调函数类型
 typedef void (*RequestCallback)(HttpRequest* request);
 
-// ==================== 公开API ====================
+// ==================== Public API ====================
 
-/// 启动HTTP服务器
-/// 
-/// @param port 服务器端口号
-/// @param host 监听的IP地址（例如 "127.0.0.1" 或 "0.0.0.0"）,传入NULL则默认为 "127.0.0.1"
-/// @param callback 请求回调函数，当收到请求时调用
-/// @return 成功返回实际端口号（>0），失败返回 <=0（注意：不是 bool）
+/// Start the HTTP server.
+///
+/// @param port Port number to bind.
+/// @param host IP address to listen on (defaults to "127.0.0.1" if NULL).
+/// @param callback Request handler callback.
+/// @return Actual bound port (>0) on success, or <=0 on failure (not a bool).
 int start_server(int port, const char* host, RequestCallback callback);
 int start_server_with_options(int port, const char* host, RequestCallback callback, int worker_threads);
 
-/// 发送HTTP响应
-/// 
-/// @param request_id 请求ID，必须与回调中的requestId匹配
-/// @param status_code HTTP状态码 (200, 404, 500等)
-/// @param headers_json 响应头的JSON字符串
-/// @param body 响应体数据
-/// @param body_len 响应体长度
-/// @return 如果响应发送成功返回true，否则返回false
+/// Send an HTTP response.
+///
+/// @param request_id Request ID matching the callback's request_id.
+/// @param status_code HTTP status code (e.g. 200, 404, 500).
+/// @param headers_json JSON string of response headers.
+/// @param body Response body bytes.
+/// @param body_len Length of response body in bytes.
+/// @return true if sent successfully, false otherwise.
 bool send_response(const char* request_id, int status_code, 
                    const char* headers_json, const char* body, int body_len);
 
-/// 停止HTTP服务器
+/// Stop the HTTP server.
 void stop_server(void);
 
-/// 获取服务器统计信息
-/// 
-/// @return JSON格式的统计信息字符串。**调用方必须用 free_string 释放**
-///         （改之前返回静态字面量的指针、不能释放；语义已翻转）
+/// Get server statistics as a JSON string.
+///
+/// @return Heap-allocated JSON string; the caller must free it with `free_string`.
 const char* get_server_stats(void);
 
-/// 释放HttpRequest结构体及其所有字段
-/// 
-/// @param request 要释放的HttpRequest指针
+/// Free an HttpRequest struct and all of its owned fields.
 void free_http_request(HttpRequest* request);
 
-/// 释放C字符串
-/// 
-/// @param s 要释放的字符串指针
+/// Free a C string allocated by this library.
 void free_string(char* s);
 
-/// 启动静态文件HTTP服务器
-/// 
-/// @param port 服务器端口号
-/// @param host 监听的IP地址（例如 "127.0.0.1" 或 "0.0.0.0"）,传入NULL则默认为 "127.0.0.1"
-/// @param root_dir 静态文件根目录路径
-/// @return 成功返回实际端口号（>0），失败返回 <=0（注意：不是 bool）
+/// Start the static file HTTP server.
+///
+/// @param port Port number to bind.
+/// @param host IP address to listen on (defaults to "127.0.0.1" if NULL).
+/// @param root_dir Root directory path for static files.
+/// @return Actual bound port (>0) on success, or <=0 on failure (not a bool).
 int start_static_server(int port, const char* host, const char* root_dir);
 
-/// 停止静态文件HTTP服务器
+/// Stop the static file HTTP server.
 void stop_static_server(void);
 
-/// 启动App HTTP服务器（混合静态文件和回调）
-/// 
-/// @param port 服务器端口号
-/// @param host 监听的IP地址（例如 "127.0.0.1" 或 "0.0.0.0"）,传入NULL则默认为 "127.0.0.1"
-/// @param root_dir 静态文件根目录路径
-/// @param callback 请求回调函数，当静态文件不存在或不是GET请求时调用
-/// @return 成功返回实际端口号（>0），失败返回 <=0（注意：不是 bool）
+/// Start the App HTTP server (hybrid static files and callback handler).
+///
+/// @param port Port number to bind.
+/// @param host IP address to listen on (defaults to "127.0.0.1" if NULL).
+/// @param root_dir Root directory path for static files.
+/// @param callback Request callback for non-GET requests or static misses.
+/// @return Actual bound port (>0) on success, or <=0 on failure (not a bool).
 int start_app_server(int port, const char* host, const char* root_dir, RequestCallback callback);
 
-/// 停止App HTTP服务器
+/// Stop the App HTTP server.
 void stop_app_server(void);
 
-/// 启动App HTTP服务器（带配置）
-/// 
-/// @param port 服务器端口号
-/// @param host 监听的IP地址
-/// @param callback 请求回调函数
-/// @param config_json 插件配置JSON字符串（可包含 root_dir 指定静态文件根目录）
-/// @return 成功返回实际端口号（>0），失败返回 <=0（注意：不是 bool）
+/// Start the App HTTP server with JSON configuration.
+///
+/// @param port Port number to bind.
+/// @param host IP address to listen on.
+/// @param callback Request handler callback.
+/// @param config_json Plugin configuration JSON string (may include `root_dir`).
+/// @return Actual bound port (>0) on success, or <=0 on failure (not a bool).
 int start_server_with_config(int port, const char* host, RequestCallback callback, const char* config_json);
 
-/// 分块读取请求body
-/// 
-/// 从指定请求的body中读取数据到缓冲区
-/// 
-/// @param request_id 请求ID
-/// @param buffer 用于存储数据的缓冲区
-/// @param buffer_size 缓冲区大小
-/// @return 返回实际读取的字节数，如果返回0表示已读取完毕，返回-1表示错误
+/// Read a chunk of the request body into the provided buffer.
+///
+/// @param request_id Request ID.
+/// @param buffer Output buffer.
+/// @param buffer_size Capacity of the output buffer.
+/// @return Bytes read (>0), 0 at EOF, or -1 on error.
 int read_request_body_chunk(const char* request_id, char* buffer, int buffer_size);
 
-/// 分块写入响应body
-/// 
-/// 向指定请求的响应流中写入数据块
-/// 
-/// @param request_id 请求ID
-/// @param chunk 要写入的数据块
-/// @param chunk_len 数据块长度
-/// @return 如果写入成功返回true，否则返回false
+/// Write a chunk to a streamed response body.
+///
+/// @param request_id Request ID.
+/// @param chunk Chunk bytes.
+/// @param chunk_len Length of chunk in bytes.
+/// @return true if written successfully, false otherwise.
 bool write_response_chunk(const char* request_id, const char* chunk, int chunk_len);
 
-/// 结束响应流
-/// 
-/// 完成指定请求的响应流，关闭发送通道
-/// 
-/// @param request_id 请求ID
-/// @return 如果成功结束响应返回true，否则返回false
-/// @param request_id 请求ID
-/// @param status_code HTTP状态码
-/// @param headers_json 响应头 JSON 字符串
-/// @return 如果成功结束响应返回true，否则返回false
+/// Finalize a streamed response.
+///
+/// @param request_id Request ID.
+/// @param status_code HTTP status code.
+/// @param headers_json JSON string of response headers.
+/// @return true if finalized successfully, false otherwise.
 bool end_response(const char* request_id, int status_code, const char* headers_json);
 
-/// 设置全局 CORS 配置
+/// Set global CORS configuration.
 ///
-/// @param config_json CORS 配置 JSON 字符串："true" 启用默认配置，对象可包含
-///   origin/methods/headers/credentials/max_age 字段，传入 NULL 或 "false" 关闭
+/// @param config_json JSON string: "true" for defaults, a serialized config object,
+///   or NULL / "false" to disable.
 void set_cors_config(const char* config_json);
 
 // ==================== WebSocket API ====================
 
-/// WebSocket 事件结构体
 typedef struct WebSocketEvent {
-    const char* connection_id;  // 连接 ID
-    int event_type;             // 事件类型: 1=Open, 2=Message, 3=Close, 4=Error
-    const char* path;           // 连接路径
-    const char* query;          // 查询字符串 (仅 Open 事件)
-    const char* headers_json;   // HTTP 头 JSON (仅 Open 事件)
-    const char* text_data;      // 文本消息数据
-    int text_len;               // 文本消息长度
-    const char* binary_data;    // 二进制消息数据
-    int binary_len;             // 二进制消息长度
-    int close_code;             // 关闭代码 (仅 Close 事件)
-    const char* close_reason;   // 关闭原因 (仅 Close 事件)
-    const char* error_message;  // 错误信息 (仅 Error 事件)
+    const char* connection_id;
+    int event_type;             // 1=Open, 2=Message, 3=Close, 4=Error
+    const char* path;
+    const char* query;          // Query string (Open event only)
+    const char* headers_json;   // HTTP headers JSON (Open event only)
+    const char* text_data;
+    int text_len;
+    const char* binary_data;
+    int binary_len;
+    int close_code;             // Close code (Close event only)
+    const char* close_reason;   // Close reason (Close event only)
+    const char* error_message;  // Error message (Error event only)
 } WebSocketEvent;
 
-/// WebSocket 事件回调函数类型
 typedef void (*WebSocketCallback)(const WebSocketEvent* event);
 
-/// 设置 WebSocket 事件回调
-/// 
-/// @param callback WebSocket 事件回调函数
+/// Register the global WebSocket event callback.
 void set_websocket_callback(WebSocketCallback callback);
 
-/// 发送 WebSocket 文本消息
-/// 
-/// @param connection_id 连接 ID
-/// @param message 要发送的文本消息
-/// @return 发送成功返回 true
+/// Send a WebSocket text message.
 bool ws_send_text(const char* connection_id, const char* message);
 
-/// 发送 WebSocket 二进制消息
-/// 
-/// @param connection_id 连接 ID
-/// @param data 二进制数据
-/// @param len 数据长度
-/// @return 发送成功返回 true
+/// Send a WebSocket binary message.
 bool ws_send_binary(const char* connection_id, const char* data, int len);
 
-/// 关闭 WebSocket 连接
-/// 
-/// @param connection_id 连接 ID
-/// @param code 关闭代码 (1000 表示正常关闭)
-/// @param reason 关闭原因
-/// @return 关闭成功返回 true
+/// Close a WebSocket connection (code 1000 indicates normal closure).
 bool ws_close(const char* connection_id, int code, const char* reason);
 
-/// 注册「请求被中断」的回调（可选，传 NULL 注销）
-/// 
-/// 客户端在 handler 返回之前断开连接时调用，参数是 request_id。
-/// 触发时机：请求 future 被丢弃（hyper 在客户端断开时直接 drop）。
-/// 
-/// ⚠️ 回调在原生线程上被调用，实现方负责切回 JS 线程；
-/// request_id 指针仅在调用期间有效，需要留存请自行拷贝。
-/// 
-/// @param cb 回调函数指针（可为 NULL）
-/// @return 注册成功返回 true
+/// Register an optional callback invoked when a client aborts a request before a response is sent.
+///
+/// Fires when hyper drops the request future on client disconnect.
+/// Note: invoked on a native thread; the caller must dispatch to the JS thread, and
+/// the `request_id` pointer is valid only during the callback invocation.
+///
+/// @param cb Callback pointer (pass NULL to unregister).
+/// @return true on success.
 bool set_request_aborted_callback(void (*cb)(const char* request_id));
 
 #ifdef __cplusplus
